@@ -266,8 +266,10 @@ def enforce_output_security(
         )
 
     # 4. Case C: Redactable findings only -> REDACT and ALLOW
+    # Zero-offset architecture: replace the entire message with "[REDACTED]".
+    # Crucially, never slice, redact, or reconstruct original text using finding offsets.
     try:
-        redaction_res = redact_output(text_to_scan, scan_res.findings)
+        redaction_res = redact_output(text_to_scan, scan_res.findings, whole_response=True)
     except RedactionError as exc:
         logger.warning("Downstream output redaction failed: %s", type(exc).__name__)
         return OutputEnforcementResult(

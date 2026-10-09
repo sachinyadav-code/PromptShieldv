@@ -45,12 +45,21 @@ class OutputRedactor:
             raise TypeError(f"Redaction mask must be a string, got {type(mask).__name__}")
         self.mask = mask
 
-    def redact(self, text: str, findings: Sequence[Any]) -> RedactionResult:
-        """Redact sensitive spans in text and return a structured RedactionResult.
+    def redact(
+        self,
+        text: str,
+        findings: Sequence[Any],
+        whole_response: bool = False,
+    ) -> RedactionResult:
+        """Redact sensitive content in text and return a structured RedactionResult.
 
         IMPORTANT SAFETY & PRIVACY INVARIANTS:
-        - Replaces sensitive spans with the fixed mask. Zero secret fragments are exposed.
-        - Text outside the selected spans is preserved character-for-character.
+        - When `whole_response=True`, replaces the entire text with the fixed mask.
+          Zero secret fragments and zero original prefixes/suffixes are exposed.
+        - When `whole_response=False`, strictly disallows running on findings detected
+          from normalized text (`is_normalized=True`), raising RedactionError.
+        - Text outside the selected spans is preserved character-for-character only
+          for unnormalized spans.
         - Spans are strictly validated against text length: 0 <= start < end <= len(text).
         - If overlapping spans are supplied unexpectedly, raises RedactionOverlapError.
         - Neither the input text nor the input finding objects are mutated.
@@ -58,12 +67,15 @@ class OutputRedactor:
         Args:
             text: Original plain-text string.
             findings: Sequence of findings or objects with `start` and `end` integer attributes.
+            whole_response: If True, replaces the entire response with the mask without
+                using finding offsets (default: False).
 
         Returns:
             RedactionResult containing the sanitized text and redaction metadata.
 
         Raises:
             TypeError: If text is not a string.
+            RedactionError: If partial redaction is attempted on normalized findings.
             RedactionMalformedFindingError: If a finding is malformed or missing integer offsets.
             RedactionSpanError: If finding spans are out of bounds or inverted.
             RedactionOverlapError: If findings contain overlapping spans.
@@ -81,6 +93,17 @@ class OutputRedactor:
                 original_length=orig_len,
                 redacted_length=orig_len,
             )
+
+        if whole_response:
+            return self.redact_whole(text, findings)
+
+        # Disallow partial redaction on normalized findings (zero-offset architecture invariant)
+        for f in findings:
+            if getattr(f, "is_normalized", False):
+                raise RedactionError(
+                    "Partial redaction cannot be performed on findings detected from normalized text. "
+                    "Use whole-response neutralization instead."
+                )
 
         # 1. Validate and extract span offsets without mutating original findings
         validated_items: List[tuple[int, int, str]] = []
@@ -157,21 +180,79 @@ class OutputRedactor:
             redacted_length=len(redacted_text),
         )
 
+    def redact_whole(self, text: str, findings: Sequence[Any]) -> RedactionResult:
+        """Replace the entire text with the replacement mask without offset slicing.
+
+        Args:
+            text: Original plain-text string.
+            findings: Sequence of findings or finding dicts.
+
+        Returns:
+            RedactionResult with redacted_text equal to self.mask.
+        """
+        if not isinstance(text, str):
+            raise TypeError(f"Input text must be a string, got {type(text).__name__}")
+
+        orig_len = len(text)
+        if not findings:
+            return RedactionResult(
+                redacted_text=text,
+                redaction_count=0,
+                redacted_rule_ids=[],
+                original_length=orig_len,
+                redacted_length=orig_len,
+            )
+
+        rule_ids: List[str] = sorted(list({
+            str(getattr(f, "rule_id", "") or (f.get("rule_id", "") if isinstance(f, dict) else ""))
+            for f in findings
+            if getattr(f, "rule_id", "") or (isinstance(f, dict) and f.get("rule_id"))
+        }))
+
+        return RedactionResult(
+            redacted_text=self.mask,
+            redaction_count=len(findings),
+            redacted_rule_ids=rule_ids,
+            original_length=orig_len,
+            redacted_length=len(self.mask),
+        )
+
 
 def redact_output(
     text: str,
     findings: Sequence[Any],
     mask: str = DEFAULT_REDACTION_MASK,
+    whole_response: bool = False,
 ) -> RedactionResult:
-    """Convenience function to redact sensitive spans using an ephemeral OutputRedactor.
+    """Convenience function to redact sensitive content using an ephemeral OutputRedactor.
 
     Args:
         text: Original plain-text string.
         findings: Sequence of OutputFinding items or objects with integer start and end offsets.
         mask: Fixed replacement mask (default: '[REDACTED]').
+        whole_response: If True, replaces entire response without offset slicing (default: False).
 
     Returns:
         Structured RedactionResult.
     """
     redactor = OutputRedactor(mask=mask)
-    return redactor.redact(text, findings)
+    return redactor.redact(text, findings, whole_response=whole_response)
+
+
+def redact_whole_output(
+    text: str,
+    findings: Sequence[Any],
+    mask: str = DEFAULT_REDACTION_MASK,
+) -> RedactionResult:
+    """Convenience function to perform safe whole-response redaction without offset slicing.
+
+    Args:
+        text: Original plain-text string.
+        findings: Sequence of OutputFinding items or objects.
+        mask: Fixed replacement mask (default: '[REDACTED]').
+
+    Returns:
+        Structured RedactionResult where redacted_text is equal to mask.
+    """
+    redactor = OutputRedactor(mask=mask)
+    return redactor.redact_whole(text, findings)

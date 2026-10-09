@@ -378,21 +378,32 @@ class TestOutputUnicodeAndBoundaryCases:
         expected_end = len(cjk_prefix) + len(secret)
         assert text[expected_start:expected_end] == secret
 
-        scan_res = scan_output(text)
-        assert scan_res.has_findings is True
-        assert scan_res.finding_count == 1
-        finding = scan_res.findings[0]
+        # Unnormalized mode (Phase 4 baseline): preserves character code-point indexing
+        scan_unnorm = scan_output(text, normalize=False)
+        assert scan_unnorm.has_findings is True
+        assert scan_unnorm.finding_count == 1
+        finding = scan_unnorm.findings[0]
         assert finding.rule_id == DLP_RULE_OPENAI_API_KEY
         assert finding.start == expected_start
         assert finding.end == expected_end
         assert text[finding.start:finding.end] == secret
 
-        redaction_res = redact_output(text, scan_res.findings)
+        redaction_res = redact_output(text, scan_unnorm.findings)
         assert redaction_res.redaction_count == 1
         assert redaction_res.redacted_text == f"{cjk_prefix}[REDACTED]{cjk_suffix}"
         assert secret not in redaction_res.redacted_text
         assert cjk_prefix in redaction_res.redacted_text
         assert cjk_suffix in redaction_res.redacted_text
+
+        # Normalized mode: \\uFF1A and \\uFF0C are compatibility characters altered by NFKC.
+        # Zero-offset architecture marks findings normalized and blocks partial slicing.
+        scan_norm = scan_output(text, normalize=True)
+        assert scan_norm.has_findings is True
+        assert scan_norm.findings[0].is_normalized is True
+        with pytest.raises(RedactionError):
+            redact_output(text, scan_norm.findings)
+        red_whole = redact_output(text, scan_norm.findings, whole_response=True)
+        assert red_whole.redacted_text == "[REDACTED]"
 
     def test_non_breaking_spaces_near_secret_preserves_offsets_and_redaction(self):
         """Verifies that non-breaking spaces (\\u00A0) surrounding secrets and in headers
@@ -401,9 +412,9 @@ class TestOutputUnicodeAndBoundaryCases:
         secret_key = "AKIA1234567890ABCDEF"
         bearer_token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ90123456789"
 
-        # Test 1: Credential preceded and followed by non-breaking space
+        # Test 1: Credential preceded and followed by non-breaking space (unnormalized mode)
         text_nbsp = f"AWS_KEY:\u00A0{secret_key}\u00A0(production)"
-        scan_nbsp = scan_output(text_nbsp)
+        scan_nbsp = scan_output(text_nbsp, normalize=False)
         assert scan_nbsp.has_findings is True
         assert scan_nbsp.finding_count == 1
         finding = scan_nbsp.findings[0]
@@ -414,9 +425,17 @@ class TestOutputUnicodeAndBoundaryCases:
         assert red_nbsp.redacted_text == "AWS_KEY:\u00A0[REDACTED]\u00A0(production)"
         assert "\u00A0" in red_nbsp.redacted_text
 
-        # Test 2: Bearer scheme with non-breaking space
+        # Under normalized mode: \\u00A0 is altered to regular space ' ', so finding is marked is_normalized=True
+        scan_nbsp_norm = scan_output(text_nbsp, normalize=True)
+        assert scan_nbsp_norm.findings[0].is_normalized is True
+        with pytest.raises(RedactionError):
+            redact_output(text_nbsp, scan_nbsp_norm.findings)
+        red_whole = redact_output(text_nbsp, scan_nbsp_norm.findings, whole_response=True)
+        assert red_whole.redacted_text == "[REDACTED]"
+
+        # Test 2: Bearer scheme with non-breaking space (unnormalized direct match)
         text_bearer = f"Authorization:\u00A0Bearer\u00A0{bearer_token}"
-        scan_bearer = scan_output(text_bearer)
+        scan_bearer = scan_output(text_bearer, normalize=False)
         assert scan_bearer.has_findings is True
         assert scan_bearer.finding_count == 1
         b_finding = scan_bearer.findings[0]
@@ -428,37 +447,53 @@ class TestOutputUnicodeAndBoundaryCases:
 
     def test_zero_width_space_adjacent_and_internal_boundary_behavior(self):
         """Documents and verifies boundary behavior for zero-width spaces (\\u200B):
-        - Contiguous adjacent zero-width space allows regex word boundary to detect secret.
-        - Internal zero-width space disrupts candidate regex match (no implicit normalization).
+        - Direct unnormalized mode: Adjacent ZWSP allows regex boundary; internal ZWSP disrupts regex.
+        - Stage 5.3 Bounded normalization mode: Strips ZWSP, detects secret, guards against partial slicing.
         """
         secret = "sk-abcdef1234567890abcdef1234567890"
 
-        # Case A: Adjacent zero-width spaces (\\u200B) outside the secret
-        # Since \\u200B is not a word character (\\w), \\b matches the boundary
+        # Case A1: Unnormalized mode (Phase 4 baseline)
         text_adj = f"token:\u200B{secret}\u200Bend"
-        expected_start = len("token:\u200B")
-        expected_end = expected_start + len(secret)
+        scan_unnorm = scan_output(text_adj, normalize=False)
+        assert scan_unnorm.has_findings is True
+        assert scan_unnorm.finding_count == 1
+        f_unnorm = scan_unnorm.findings[0]
+        assert text_adj[f_unnorm.start:f_unnorm.end] == secret
+        red_unnorm = redact_output(text_adj, scan_unnorm.findings)
+        assert red_unnorm.redacted_text == "token:\u200B[REDACTED]\u200Bend"
 
-        scan_adj = scan_output(text_adj)
-        assert scan_adj.has_findings is True
-        assert scan_adj.finding_count == 1
-        finding = scan_adj.findings[0]
-        assert finding.start == expected_start
-        assert finding.end == expected_end
-        assert text_adj[finding.start:finding.end] == secret
+        # Case A2: Stage 5.3 Bounded normalization mode
+        # \\u200B is stripped during normalization, so offset diverges from original text
+        scan_norm = scan_output(text_adj, normalize=True)
+        assert scan_norm.has_findings is True
+        assert scan_norm.finding_count == 1
+        f_norm = scan_norm.findings[0]
+        assert f_norm.is_normalized is True
+        # Partial redaction on normalized finding is strictly blocked
+        with pytest.raises(RedactionError):
+            redact_output(text_adj, scan_norm.findings)
+        # Whole-response redaction safely replaces entire response
+        red_whole = redact_output(text_adj, scan_norm.findings, whole_response=True)
+        assert red_whole.redacted_text == "[REDACTED]"
 
-        red_adj = redact_output(text_adj, scan_adj.findings)
-        assert red_adj.redacted_text == "token:\u200B[REDACTED]\u200Bend"
-        assert "\u200B" in red_adj.redacted_text
-
-        # Case B: Zero-width space inserted inside the secret candidate
-        # The current deterministic detector strictly checks token character sets and does NOT
-        # implicitly strip or normalize unseen zero-width characters inside candidate tokens.
+        # Case B1: Unnormalized mode - internal ZWSP disrupts regex (Phase 4 baseline)
         text_internal = "sk-abcdef1234\u200B567890abcdef1234567890"
-        scan_internal = scan_output(text_internal)
-        assert scan_internal.is_clean is True
-        assert scan_internal.has_findings is False
-        assert scan_internal.finding_count == 0
+        scan_internal_unnorm = scan_output(text_internal, normalize=False)
+        assert scan_internal_unnorm.is_clean is True
+        assert scan_internal_unnorm.has_findings is False
+
+        # Case B2: Stage 5.3 Bounded normalization mode
+        # \\u200B is stripped during normalization, credential is detected, partial slicing blocked
+        scan_internal_norm = scan_output(text_internal, normalize=True)
+        assert scan_internal_norm.has_findings is True
+        assert scan_internal_norm.finding_count == 1
+        f_internal = scan_internal_norm.findings[0]
+        assert f_internal.rule_id == DLP_RULE_OPENAI_API_KEY
+        assert f_internal.is_normalized is True
+        with pytest.raises(RedactionError):
+            redact_output(text_internal, scan_internal_norm.findings)
+        red_internal_whole = redact_output(text_internal, scan_internal_norm.findings, whole_response=True)
+        assert red_internal_whole.redacted_text == "[REDACTED]"
 
     def test_mixed_multilingual_and_emoji_with_multiple_secrets(self):
         """Verifies that multiple secrets embedded within mixed CJK, Arabic RTL, and emoji
@@ -486,3 +521,21 @@ class TestOutputUnicodeAndBoundaryCases:
         assert "مفتاح AWS السحابي:" in red_res.redacted_text
         assert "🔐" in red_res.redacted_text
         assert "🛡️" in red_res.redacted_text
+
+    def test_case_insensitive_credential_prefix_detection_and_redaction(self):
+        """Verifies end-to-end scanning and redaction of credentials with case-insensitive prefixes."""
+        sk_key = "SK-abcdef1234567890abcdef1234567890"
+        bearer_entry = "bearer a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"
+        text = f"OpenAI Key: {sk_key}\nAuth: {bearer_entry}"
+
+        scan_res = scan_output(text)
+        assert scan_res.finding_count == 2
+        assert scan_res.matched_rule_ids == sorted([DLP_RULE_OPENAI_API_KEY, DLP_RULE_BEARER_TOKEN])
+        assert text[scan_res.findings[0].start : scan_res.findings[0].end] == sk_key
+        assert text[scan_res.findings[1].start : scan_res.findings[1].end] == bearer_entry
+
+        red_res = redact_output(text, scan_res.findings)
+        assert red_res.redaction_count == 2
+        assert sk_key not in red_res.redacted_text
+        assert bearer_entry not in red_res.redacted_text
+        assert red_res.redacted_text == "OpenAI Key: [REDACTED]\nAuth: [REDACTED]"

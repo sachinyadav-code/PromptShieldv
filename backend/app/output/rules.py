@@ -112,6 +112,7 @@ class OutputFinding:
     start: int
     end: int
     description: str
+    is_normalized: bool = False
 
     def __post_init__(self) -> None:
         if self.start < 0:
@@ -310,11 +311,11 @@ PATTERN_PRIVATE_KEY_HEADER = re.compile(
 # 2. AWS Access Key ID: AKIA prefix + 16 uppercase alphanumeric chars
 PATTERN_AWS_KEY = re.compile(r"\b(AKIA[0-9A-Z]{16})\b")
 
-# 3. OpenAI-Style API Key: sk- or sk-proj- prefix + 20 to 100 safe token characters
-PATTERN_OPENAI_KEY = re.compile(r"\b(sk-(?:proj-)?[a-zA-Z0-9_\-]{20,100})\b")
+# 3. OpenAI-Style API Key: sk- or sk-proj- prefix + 20 to 100 safe token characters (scoped case-insensitive prefix)
+PATTERN_OPENAI_KEY = re.compile(r"\b((?i:sk-(?:proj-)?)[a-zA-Z0-9_\-]{20,100})\b")
 
-# 4. Bearer Token: Bearer scheme followed by 20 to 256 plausible token characters
-PATTERN_BEARER_TOKEN = re.compile(r"\bBearer\s+([a-zA-Z0-9_\-\.]{20,256})\b")
+# 4. Bearer Token: Bearer scheme followed by 20 to 256 plausible token characters (scoped case-insensitive scheme)
+PATTERN_BEARER_TOKEN = re.compile(r"\b(?i:bearer)\s+([a-zA-Z0-9_\-\.]{20,256})\b")
 
 # 5. Database URI: Supported schemes with embedded user:password credentials
 PATTERN_DB_URI_CREDENTIAL = re.compile(
@@ -417,7 +418,10 @@ def _scan_openai_keys(text: str) -> List[OutputFinding]:
     findings: List[OutputFinding] = []
     for match in PATTERN_OPENAI_KEY.finditer(text):
         token_candidate = match.group(1)
-        if token_candidate in EXACT_OPENAI_DOCUMENTATION_PLACEHOLDERS:
+        if (
+            token_candidate in EXACT_OPENAI_DOCUMENTATION_PLACEHOLDERS
+            or token_candidate.lower() in EXACT_OPENAI_DOCUMENTATION_PLACEHOLDERS
+        ):
             continue
         findings.append(
             OutputFinding(
@@ -436,7 +440,10 @@ def _scan_bearer_tokens(text: str) -> List[OutputFinding]:
     findings: List[OutputFinding] = []
     for match in PATTERN_BEARER_TOKEN.finditer(text):
         token_value = match.group(1)
-        if token_value in EXACT_BEARER_PLACEHOLDERS:
+        if (
+            token_value in EXACT_BEARER_PLACEHOLDERS
+            or token_value.upper() in EXACT_BEARER_PLACEHOLDERS
+        ):
             continue
         findings.append(
             OutputFinding(

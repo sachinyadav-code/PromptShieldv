@@ -188,6 +188,60 @@ class TestOpenAIApiKeyDetection:
         findings = scan_output_text(text)
         assert not any(f.rule_id == DLP_RULE_OPENAI_API_KEY for f in findings)
 
+    @pytest.mark.parametrize(
+        "synthetic_key",
+        [
+            "SK-abcdef1234567890abcdef1234567890",
+            "sK-abcdef1234567890abcdef1234567890",
+            "Sk-abcdef1234567890abcdef1234567890",
+            "SK-PROJ-1234567890abcdef1234567890abcdef123456",
+            "sk-PROJ-1234567890abcdef1234567890abcdef123456",
+            "SK-proj-1234567890abcdef1234567890abcdef123456",
+            "sK-pRoJ-1234567890abcdef1234567890abcdef123456",
+        ],
+    )
+    def test_detects_case_insensitive_openai_style_keys(self, synthetic_key: str):
+        text = f"API token configured: {synthetic_key}"
+        findings = scan_output_text(text)
+        assert len(findings) == 1
+        finding = findings[0]
+        assert finding.rule_id == DLP_RULE_OPENAI_API_KEY
+        assert finding.category == "API_KEY"
+        assert finding.severity == "HIGH"
+        assert text[finding.start : finding.end] == synthetic_key
+
+    @pytest.mark.parametrize(
+        "placeholder",
+        [
+            "SK-00000000000000000000000000000000",
+            "sK-00000000000000000000000000000000",
+            "SK-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "SK-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+            "SK-your-api-key-here-1234567890",
+            "SK-YOUR-API-KEY-HERE-1234567890",
+        ],
+    )
+    def test_excludes_case_insensitive_openai_placeholders(self, placeholder: str):
+        text = f"Set OPENAI_API_KEY={placeholder} in your configuration"
+        findings = scan_output_text(text)
+        assert not any(f.rule_id == DLP_RULE_OPENAI_API_KEY for f in findings)
+
+    @pytest.mark.parametrize(
+        "invalid_key",
+        [
+            "SK-12345",  # Too short
+            "sK-short",  # Too short
+            "SK-PROJ-123",  # Too short
+            "AK-abcdef1234567890abcdef1234567890",  # Wrong prefix
+            "pk-abcdef1234567890abcdef1234567890",  # Wrong prefix
+            "SK-abcdef@1234567890abcdef1234567890",  # Disallowed character '@'
+        ],
+    )
+    def test_ignores_invalid_case_insensitive_sk_formats(self, invalid_key: str):
+        text = f"Invalid candidate: {invalid_key}"
+        findings = scan_output_text(text)
+        assert not any(f.rule_id == DLP_RULE_OPENAI_API_KEY for f in findings)
+
 
 class TestBearerTokenDetection:
     """Positive, negative, and placeholder tests for Bearer tokens."""
@@ -224,6 +278,56 @@ class TestBearerTokenDetection:
     )
     def test_excludes_generic_bearer_placeholders(self, placeholder_header: str):
         findings = scan_output_text(placeholder_header)
+        assert not any(f.rule_id == DLP_RULE_BEARER_TOKEN for f in findings)
+
+    @pytest.mark.parametrize(
+        "scheme",
+        ["bearer", "BEARER", "bEaReR", "Bearer"],
+    )
+    def test_detects_case_insensitive_bearer_tokens(self, scheme: str):
+        token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0"
+        header = f"{scheme} {token}"
+        text = f"Authorization: {header}"
+        findings = scan_output_text(text)
+        assert len(findings) == 1
+        finding = findings[0]
+        assert finding.rule_id == DLP_RULE_BEARER_TOKEN
+        assert finding.category == "BEARER_TOKEN"
+        assert finding.severity == "HIGH"
+        assert text[finding.start : finding.end] == header
+
+    @pytest.mark.parametrize(
+        "placeholder_header",
+        [
+            "Authorization: bearer YOUR_TOKEN_HERE",
+            "Authorization: bearer your_token_here",
+            "Authorization: BEARER YOUR_ACCESS_TOKEN_HERE",
+            "Authorization: BEARER your_access_token_here",
+            "Authorization: bEaReR YOUR_API_TOKEN_HERE",
+            "Authorization: bearer your_api_token_here",
+            "Authorization: bearer INSERT_TOKEN_HERE",
+            "Authorization: bearer insert_token_here",
+            "Authorization: bearer PLACEHOLDER_TOKEN_HERE",
+            "Authorization: bearer placeholder_token_here",
+            "Authorization: bearer 000000000000000000000000",
+            "Authorization: BEARER 000000000000000000000000",
+        ],
+    )
+    def test_excludes_case_insensitive_bearer_placeholders(self, placeholder_header: str):
+        findings = scan_output_text(placeholder_header)
+        assert not any(f.rule_id == DLP_RULE_BEARER_TOKEN for f in findings)
+
+    @pytest.mark.parametrize(
+        "invalid_header",
+        [
+            "Authorization: bearertoken12345678901234567890",  # No whitespace
+            "Authorization: Basic eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9",  # Wrong scheme
+            "Authorization: bearer short_token",  # Too short
+            "Authorization: bearer tok!en!with!special!chars!123",  # Disallowed characters splitting token
+        ],
+    )
+    def test_ignores_invalid_bearer_formats(self, invalid_header: str):
+        findings = scan_output_text(invalid_header)
         assert not any(f.rule_id == DLP_RULE_BEARER_TOKEN for f in findings)
 
 
