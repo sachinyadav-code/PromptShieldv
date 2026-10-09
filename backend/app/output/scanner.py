@@ -7,6 +7,12 @@ deterministic DLP rules and returns structured OutputScanResult models.
 import time
 from typing import Optional
 
+from app.output.decoder import (
+    MAX_DECODED_TEXT_LENGTH,
+    OutputDecodedLengthExceededError,
+    OutputDecodingError,
+    decode_for_detection,
+)
 from app.output.normalizer import (
     MAX_NORMALIZED_TEXT_LENGTH,
     normalize_for_detection,
@@ -25,9 +31,9 @@ from app.output.schemas import OutputScanResult, OutputScanStatus
 class OutputScanner:
     """Reusable plain-text output security scanner.
 
-    Invokes bounded Unicode normalization and deterministic DLP rules,
-    enforcing input length limits, finding count ceilings, and fail-closed
-    exception propagation.
+    Invokes bounded Unicode normalization, bounded credential decoding, and
+    deterministic DLP rules, enforcing input length limits, finding count ceilings,
+    and fail-closed exception propagation.
     """
 
     def __init__(
@@ -37,6 +43,8 @@ class OutputScanner:
         resolve_overlaps: bool = True,
         normalize: bool = True,
         max_normalized_length: int = MAX_NORMALIZED_TEXT_LENGTH,
+        decode: bool = True,
+        max_decoded_length: int = MAX_DECODED_TEXT_LENGTH,
     ) -> None:
         """Initialize OutputScanner with configurable boundaries.
 
@@ -48,12 +56,17 @@ class OutputScanner:
             normalize: If True, normalizes plain text (stripping 17 invisible chars and
                 applying standard NFKC) into a bounded copy before detection (default: True).
             max_normalized_length: Maximum allowed normalized length (default: 100,000).
+            decode: If True, decodes URL percent-encoded bytes and hex escape sequences
+                into a bounded copy before detection (default: True).
+            max_decoded_length: Maximum allowed decoded length (default: 100,000).
         """
         self.max_length = max_length
         self.max_findings = max_findings
         self.resolve_overlaps = resolve_overlaps
         self.normalize = normalize
         self.max_normalized_length = max_normalized_length
+        self.decode = decode
+        self.max_decoded_length = max_decoded_length
 
     def scan(self, text: str) -> OutputScanResult:
         """Scan plain-text output and return a structured OutputScanResult.
@@ -63,9 +76,9 @@ class OutputScanner:
           it raises an explicit, safe typed exception.
         - Completed clean scans return `is_clean=True` and `has_findings=False`.
         - Completed scans with findings return `is_clean=False` and `has_findings=True`.
-        - When normalization is active, DLP detection operates on a bounded normalized
-          scratchpad. If normalization altered the input text, all findings are flagged
-          with `is_normalized=True` to prevent unsafe partial slicing.
+        - When normalization or decoding is active, DLP detection operates on a bounded
+          inspection scratchpad. If transformations altered the input text, all findings
+          are flagged with `is_normalized=True` to prevent unsafe partial slicing.
 
         Args:
             text: Plain-text string to scan.
@@ -75,9 +88,10 @@ class OutputScanner:
 
         Raises:
             TypeError: If text is not a string.
-            OutputLengthExceededError: If text length exceeds max_length or normalized limit.
+            OutputLengthExceededError: If text length exceeds max_length, normalized limit, or decoded limit.
             OutputFindingLimitExceededError: If finding count exceeds max_findings.
             OutputNormalizationError: If Unicode normalization fails.
+            OutputDecodingError: If encoded candidate decoding fails.
         """
         if not isinstance(text, str):
             raise TypeError(f"Input text must be a string, got {type(text).__name__}")
@@ -86,22 +100,38 @@ class OutputScanner:
 
         if self.normalize:
             # 1. Bounded normalization for detection scratchpad
-            normalized_text = normalize_for_detection(
+            scratchpad = normalize_for_detection(
                 text,
                 max_input_length=self.max_length,
                 max_normalized_length=self.max_normalized_length,
             )
-            is_altered = (normalized_text != text)
+            # 2. Bounded decoding for detection scratchpad (if enabled)
+            if self.decode:
+                decoded = decode_for_detection(
+                    scratchpad,
+                    max_input_length=self.max_normalized_length,
+                    max_decoded_length=self.max_decoded_length,
+                )
+                if decoded != scratchpad:
+                    scratchpad = normalize_for_detection(
+                        decoded,
+                        max_input_length=self.max_normalized_length,
+                        max_normalized_length=self.max_normalized_length,
+                    )
+                else:
+                    scratchpad = decoded
 
-            # 2. Deterministic DLP regex scanning on normalized copy
+            is_altered = (scratchpad != text)
+
+            # 3. Deterministic DLP regex scanning on inspection copy
             raw_findings = scan_output_text(
-                normalized_text,
+                scratchpad,
                 max_length=self.max_normalized_length,
                 resolve_overlaps=self.resolve_overlaps,
                 max_findings=self.max_findings,
             )
 
-            # 3. If normalized text differs from original, mark every finding as normalized.
+            # 4. If inspection scratchpad differs from original, mark every finding as normalized.
             # Never attempt to infer offset correspondence through substring comparisons.
             if is_altered:
                 findings = [
@@ -119,13 +149,42 @@ class OutputScanner:
             else:
                 findings = raw_findings
         else:
-            # Unnormalized direct scanning path
-            findings = scan_output_text(
-                text,
-                max_length=self.max_length,
-                resolve_overlaps=self.resolve_overlaps,
-                max_findings=self.max_findings,
-            )
+            # Unnormalized direct scanning path (with optional decoding if enabled)
+            if self.decode:
+                decoded = decode_for_detection(
+                    text,
+                    max_input_length=self.max_length,
+                    max_decoded_length=self.max_decoded_length,
+                )
+                is_altered = (decoded != text)
+                raw_findings = scan_output_text(
+                    decoded,
+                    max_length=self.max_decoded_length,
+                    resolve_overlaps=self.resolve_overlaps,
+                    max_findings=self.max_findings,
+                )
+                if is_altered:
+                    findings = [
+                        OutputFinding(
+                            rule_id=f.rule_id,
+                            category=f.category,
+                            severity=f.severity,
+                            start=f.start,
+                            end=f.end,
+                            description=f.description,
+                            is_normalized=True,
+                        )
+                        for f in raw_findings
+                    ]
+                else:
+                    findings = raw_findings
+            else:
+                findings = scan_output_text(
+                    text,
+                    max_length=self.max_length,
+                    resolve_overlaps=self.resolve_overlaps,
+                    max_findings=self.max_findings,
+                )
 
         duration_ms = round((time.perf_counter() - start_time) * 1000, 3)
 
@@ -147,6 +206,8 @@ def scan_output(
     resolve_overlaps: bool = True,
     normalize: bool = True,
     max_normalized_length: int = MAX_NORMALIZED_TEXT_LENGTH,
+    decode: bool = True,
+    max_decoded_length: int = MAX_DECODED_TEXT_LENGTH,
 ) -> OutputScanResult:
     """Convenience function to scan plain-text output using an ephemeral OutputScanner.
 
@@ -157,15 +218,19 @@ def scan_output(
         resolve_overlaps: If True, resolves overlapping spans deterministically (default: True).
         normalize: If True, normalizes plain text before detection (default: True).
         max_normalized_length: Maximum allowed normalized length (default: 100,000).
+        decode: If True, decodes URL percent-encoded bytes and hex escape sequences
+            before detection (default: True).
+        max_decoded_length: Maximum allowed decoded length (default: 100,000).
 
     Returns:
         Structured OutputScanResult.
 
     Raises:
         TypeError: If text is not a string.
-        OutputLengthExceededError: If text exceeds max_length or normalized limit.
+        OutputLengthExceededError: If text exceeds max_length, normalized limit, or decoded limit.
         OutputFindingLimitExceededError: If finding count exceeds max_findings.
         OutputNormalizationError: If normalization fails.
+        OutputDecodingError: If decoding fails.
     """
     scanner = OutputScanner(
         max_length=max_length,
@@ -173,5 +238,7 @@ def scan_output(
         resolve_overlaps=resolve_overlaps,
         normalize=normalize,
         max_normalized_length=max_normalized_length,
+        decode=decode,
+        max_decoded_length=max_decoded_length,
     )
     return scanner.scan(text)
