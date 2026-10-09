@@ -1,122 +1,116 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+import React, { useState, useEffect, useMemo } from 'react';
+import { PromptShieldApiClient, getDefaultApiBaseUrl } from './api/client';
+import { Navbar } from './components/Navbar';
+import type { TabType } from './components/Navbar';
+import { ConfigModal } from './components/ConfigModal';
+import { OverviewView } from './components/OverviewView';
+import { InspectView } from './components/InspectView';
+import { AuditEventsView } from './components/AuditEventsView';
+import { RulesView } from './components/RulesView';
+import './App.css';
 
-function App() {
-  const [count, setCount] = useState(0)
+export const App: React.FC = () => {
+  const [activeTab, setActiveTab] = useState<TabType>('overview');
+  const [baseUrl, setBaseUrl] = useState<string>(getDefaultApiBaseUrl());
+  const [apiKey, setApiKey] = useState<string>('');
+  const [isConfigOpen, setIsConfigOpen] = useState<boolean>(false);
+  const [isConnected, setIsConnected] = useState<boolean | null>(null);
+
+  // Instantiates the API client with current in-memory credentials
+  const apiClient = useMemo(() => {
+    return new PromptShieldApiClient(baseUrl, apiKey);
+  }, [baseUrl, apiKey]);
+
+  // Check health periodically or on baseUrl change
+  useEffect(() => {
+    let isCancelled = false;
+    const check = async () => {
+      try {
+        const health = await apiClient.getHealth();
+        if (!isCancelled) {
+          setIsConnected(health.status === 'ok');
+        }
+      } catch {
+        if (!isCancelled) {
+          setIsConnected(false);
+        }
+      }
+    };
+
+    void check();
+    const timer = setInterval(check, 30000);
+    return () => {
+      isCancelled = true;
+      clearInterval(timer);
+    };
+  }, [apiClient]);
+
+  const handleSaveConfig = (newBaseUrl: string, newApiKey: string) => {
+    setBaseUrl(newBaseUrl);
+    setApiKey(newApiKey);
+  };
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+    <div className="app-layout">
+      <Navbar
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        isConnected={isConnected}
+        hasApiKey={apiKey.length > 0}
+        baseUrl={baseUrl}
+        onOpenSettings={() => setIsConfigOpen(true)}
+      />
 
-      <div className="ticks"></div>
+      <main className="main-content" role="main">
+        {activeTab === 'overview' && (
+          <OverviewView
+            apiClient={apiClient}
+            onNavigate={setActiveTab}
+            onOpenSettings={() => setIsConfigOpen(true)}
+          />
+        )}
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
+        {activeTab === 'inspect' && (
+          <InspectView
+            apiClient={apiClient}
+            onOpenSettings={() => setIsConfigOpen(true)}
+          />
+        )}
+
+        {activeTab === 'audit' && (
+          <AuditEventsView
+            apiClient={apiClient}
+            onOpenSettings={() => setIsConfigOpen(true)}
+          />
+        )}
+
+        {activeTab === 'rules' && (
+          <RulesView
+            apiClient={apiClient}
+            onOpenSettings={() => setIsConfigOpen(true)}
+          />
+        )}
+      </main>
+
+      <footer className="app-footer">
+        <div className="footer-content">
+          <span>PromptShield Enterprise Security Gateway &copy; 2026</span>
+          <span className="footer-status">
+            Connected to <code>{baseUrl}</code> &bull; In-memory security isolation active
+          </span>
         </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
+      </footer>
 
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
-}
+      <ConfigModal
+        isOpen={isConfigOpen}
+        onClose={() => setIsConfigOpen(false)}
+        baseUrl={baseUrl}
+        apiKey={apiKey}
+        onSave={handleSaveConfig}
+        apiClient={apiClient}
+      />
+    </div>
+  );
+};
 
-export default App
+export default App;
