@@ -1,21 +1,58 @@
-"""Structured security event logging for PromptShield Phase 1.
+"""Structured security event logging for PromptShield Phase 1-3.
 
-Important Notice:
-Audit events are maintained in-memory for Phase 1 inspection and testing.
-They are not persistent across server restarts and are not cryptographically
-tamper-proof. Full raw prompts and credentials are never stored.
+Important Security & Storage Notice:
+- In-Memory Ring Buffer: Audit events are maintained strictly in an in-memory
+  FIFO buffer (maximum 1,000 events) for local inspection, test validation,
+  and forensic correlation during the current process lifecycle.
+- Non-Persistent: Audit events are NOT written to a persistent database or disk
+  store and do NOT persist across application restarts.
+- Not Tamper-Proof: This in-memory store does NOT provide cryptographic
+  immutability, append-only guarantees, or formal regulatory compliance certifications.
+- Privacy Guarantees: Full raw user prompts, user search queries, retrieved document
+  contents, document metadata, credentials, and model-generated responses are NEVER
+  stored in audit event payloads. Only content lengths, SHA-256 cryptographic fingerprints,
+  and sanitized identifiers are recorded.
 """
 
+import copy
 from datetime import datetime, timezone
 import hashlib
 import json
 import logging
+import re
+import threading
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("promptshield.audit")
 
-# In-memory storage for test validation and local audit inspection
+# Maximum capacity for in-memory FIFO audit ring buffer
+MAX_AUDIT_EVENTS = 1000
 _audit_events: List[Dict[str, Any]] = []
+_audit_lock = threading.Lock()
+
+# Deterministic allowlist: letters, digits, underscore, hyphen, dot, colon, plus
+AUDIT_ID_ALLOWED_CHARS_PATTERN = re.compile(r"[^a-zA-Z0-9_\-.:+]")
+CONTROL_CHARS_PATTERN = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def sanitize_audit_id(val: Any, max_length: int = 128, fallback: str = "") -> str:
+    """Sanitize identifier string to prevent log injection and field forging (CWE-117).
+
+    Rules:
+    - Strips non-printable ASCII and control characters (\x00-\x1f, \x7f-\x9f, including \n, \r, \t).
+    - Normalizes characters outside the safe allowlist [a-zA-Z0-9_-.:+] to underscore '_'.
+    - Bounded strictly to max_length characters.
+    - If empty or entirely stripped of characters, returns safe fallback without logging raw input.
+    """
+    if val is None:
+        return fallback
+    val_str = str(val)
+    # Strip control characters and newlines first
+    no_ctrl = CONTROL_CHARS_PATTERN.sub("", val_str)
+    # Normalize disallowed characters to '_'
+    safe_chars = AUDIT_ID_ALLOWED_CHARS_PATTERN.sub("_", no_ctrl)
+    truncated = safe_chars[:max_length]
+    return truncated if truncated else fallback
 
 
 def _compute_prompt_hash(prompt: str) -> str:
@@ -39,32 +76,128 @@ def log_security_event(
     Avoids storing raw prompt text to prevent sensitive data accumulation.
     Stores prompt length and SHA-256 fingerprint for forensic correlation.
     """
+    sanitized_req_id = sanitize_audit_id(request_id, max_length=128, fallback="unknown_req")
+    sanitized_client_req_id = (
+        sanitize_audit_id(client_request_id, max_length=128, fallback="unknown_client")
+        if client_request_id is not None
+        else None
+    )
+    sanitized_endpoint = CONTROL_CHARS_PATTERN.sub("", str(endpoint))[:64] or "/unknown"
+    sanitized_decision = sanitize_audit_id(decision, max_length=32, fallback="UNKNOWN")
+    sanitized_decision_source = (
+        sanitize_audit_id(decision_source, max_length=64, fallback="unknown_source")
+        if decision_source is not None
+        else None
+    )
+    sanitized_matched_rule_ids = [
+        sanitize_audit_id(r, max_length=64, fallback="unknown_rule")
+        for r in matched_rule_ids
+    ][:100]
+
     event = {
-        "event_id": request_id,
-        "request_id": request_id,
-        "client_request_id": client_request_id,
+        "event_id": sanitized_req_id,
+        "request_id": sanitized_req_id,
+        "client_request_id": sanitized_client_req_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "endpoint": endpoint,
-        "decision": decision,
-        "decision_source": decision_source,
-        "matched_rule_ids": matched_rule_ids,
-        "heuristic_risk_score": risk_score,
-        "forwarded": forwarded,
-        "prompt_length": len(prompt),
+        "endpoint": sanitized_endpoint,
+        "decision": sanitized_decision,
+        "decision_source": sanitized_decision_source,
+        "matched_rule_ids": sanitized_matched_rule_ids,
+        "heuristic_risk_score": round(max(0.0, min(float(risk_score), 1.0)), 2),
+        "forwarded": bool(forwarded),
+        "prompt_length": max(0, len(prompt)),
         "prompt_sha256": _compute_prompt_hash(prompt),
     }
 
-    _audit_events.append(event)
+    with _audit_lock:
+        if len(_audit_events) >= MAX_AUDIT_EVENTS:
+            _audit_events.pop(0)
+        _audit_events.append(copy.deepcopy(event))
+    logger.info(json.dumps(event))
+    return event
+
+
+def log_rag_security_event(
+    request_id: str,
+    endpoint: str,
+    decision: str,
+    matched_rule_ids: List[str],
+    risk_score: float,
+    forwarded: bool,
+    query: str,
+    retrieved_doc_ids: List[str],
+    num_retrieved: int,
+    is_complete: bool,
+    client_request_id: Optional[str] = None,
+    decision_source: Optional[str] = None,
+    error_code: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Record a structured security audit event for RAG requests.
+
+    Avoids storing raw query text, retrieved document contents, metadata, or secrets.
+    Stores query length, SHA-256 fingerprint, and sanitized doc IDs for forensics.
+    """
+    sanitized_req_id = sanitize_audit_id(request_id, max_length=128, fallback="unknown_req")
+    sanitized_client_request_id = (
+        sanitize_audit_id(client_request_id, max_length=128, fallback="unknown_client")
+        if client_request_id is not None
+        else None
+    )
+    sanitized_doc_ids = [
+        sanitize_audit_id(did, max_length=64, fallback="unknown_doc") for did in retrieved_doc_ids
+    ][:50]
+    sanitized_endpoint = CONTROL_CHARS_PATTERN.sub("", str(endpoint))[:64] or "/unknown"
+    sanitized_decision = sanitize_audit_id(decision, max_length=32, fallback="UNKNOWN")
+    sanitized_decision_source = (
+        sanitize_audit_id(decision_source, max_length=64, fallback="unknown_source")
+        if decision_source is not None
+        else None
+    )
+    sanitized_error_code = (
+        sanitize_audit_id(error_code, max_length=64, fallback="unknown_error")
+        if error_code is not None
+        else None
+    )
+    sanitized_matched_rule_ids = [
+        sanitize_audit_id(r, max_length=64, fallback="unknown_rule")
+        for r in matched_rule_ids
+    ][:100]
+
+    event = {
+        "event_id": sanitized_req_id,
+        "request_id": sanitized_req_id,
+        "client_request_id": sanitized_client_request_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "endpoint": sanitized_endpoint,
+        "decision": sanitized_decision,
+        "decision_source": sanitized_decision_source,
+        "matched_rule_ids": sanitized_matched_rule_ids,
+        "heuristic_risk_score": round(max(0.0, min(float(risk_score), 1.0)), 2),
+        "forwarded": bool(forwarded),
+        "query_length": max(0, len(query)),
+        "query_sha256": _compute_prompt_hash(query),
+        "retrieved_doc_ids": sanitized_doc_ids,
+        "num_retrieved": max(0, min(int(num_retrieved), 1000)),
+        "is_complete": bool(is_complete),
+        "error_code": sanitized_error_code,
+    }
+
+    with _audit_lock:
+        if len(_audit_events) >= MAX_AUDIT_EVENTS:
+            _audit_events.pop(0)
+        _audit_events.append(copy.deepcopy(event))
     logger.info(json.dumps(event))
     return event
 
 
 def get_audit_events() -> List[Dict[str, Any]]:
-    """Return all recorded audit events (used by tests and debugging)."""
-    return list(_audit_events)
+    """Return an isolated deep copy of all recorded audit events (used by tests and debugging)."""
+    with _audit_lock:
+        return copy.deepcopy(_audit_events)
 
 
 def clear_audit_events() -> None:
     """Reset the in-memory audit event log."""
     global _audit_events
-    _audit_events.clear()
+    with _audit_lock:
+        _audit_events.clear()

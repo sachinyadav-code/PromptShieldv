@@ -11,16 +11,22 @@ import threading
 from typing import Any, List, Literal, Optional, Union
 
 from app.detection.rules import DetectionRule
+from app.rag.inspection import RAGInspectionReport
 from app.schemas import MLAssessment
 
-PolicyDecisionSource = Literal["deterministic_rule", "ml_enforcement", "allow_default"]
+PolicyDecisionSource = Literal[
+    "deterministic_rule",
+    "ml_enforcement",
+    "rag_inspection",
+    "allow_default",
+]
 
 
 @dataclass
 class PolicyDecision:
     """The outcome of evaluating detection findings against gateway policies."""
 
-    decision: Literal["ALLOW", "BLOCK"]
+    decision: Literal["ALLOW", "BLOCK", "REVIEW"]
     risk_score: float
     matched_rule_ids: List[str]
     explanation: str
@@ -229,4 +235,121 @@ def evaluate_policy(
         matched_rules=matched_rules,
         ml_assessment=ml_assessment,
         mode=mode,
+    )
+
+
+def evaluate_rag_policy(
+    report: RAGInspectionReport,
+    ml_assessment: Optional[Union[MLAssessment, Any]] = None,
+    mode: Optional[Union[str, MLEnforcementMode]] = None,
+) -> PolicyDecision:
+    """Evaluate multi-level RAG inspection report and optional ML assessment.
+
+    Signal Precedence & Security Policy Rules:
+    1. Deterministic Sovereign Precedence:
+       If report.overall_assessment == "BLOCK", the decision is strictly "BLOCK"
+       with decision_source="deterministic_rule". ML assessments (benign or otherwise)
+       and policy modes can NEVER override a deterministic rule match.
+    2. Incomplete Inspection (Fail-Closed):
+       If not report.is_complete, the decision is strictly "REVIEW"
+       with decision_source="rag_inspection". An incomplete inspection (e.g. exceeded
+       limits or failed checks) must NEVER result in an ordinary ALLOW.
+    3. Contextual / Security Review:
+       If report.overall_assessment == "REVIEW", the decision is strictly "REVIEW"
+       with decision_source="rag_inspection". A REVIEW verdict (e.g. ambiguous educational
+       security context or resource caps) must NEVER be silently converted to ALLOW.
+    4. ML Enforcement (block_on_threshold mode):
+       If report.overall_assessment == "ALLOW" and effective policy mode is "block_on_threshold":
+       If ml_assessment is available and would_block is True, the decision is "BLOCK"
+       with decision_source="ml_enforcement".
+    5. Observational ML Mode:
+       If effective policy mode is "observe", an ML injection prediction does not block
+       on its own.
+    6. Unavailable ML Resiliency:
+       An unavailable ML assessment (available=False or None) is NEVER treated as benign,
+       and never triggers an ML-only block on its own; deterministic clearance is preserved.
+    7. Default Allow Path:
+       If all evaluated tiers are ALLOW, inspection is complete, and ML did not block,
+       decision is "ALLOW" with decision_source="allow_default".
+
+    Returns:
+        PolicyDecision with decision ("ALLOW", "BLOCK", "REVIEW"), risk score, matched rules,
+        explanation, and decision_source.
+    """
+    matched_ids = list(report.all_matched_rule_ids)
+
+    # 1. Deterministic BLOCK (Sovereign Precedence across all RAG tiers)
+    if report.overall_assessment == "BLOCK":
+        return PolicyDecision(
+            decision="BLOCK",
+            risk_score=report.max_risk_score,
+            matched_rule_ids=matched_ids,
+            explanation=report.summary_explanation,
+            decision_source="deterministic_rule",
+        )
+
+    # 2. Incomplete Inspection (Fail-Closed Safeguard)
+    if not report.is_complete:
+        return PolicyDecision(
+            decision="REVIEW",
+            risk_score=max(report.max_risk_score, 0.70),
+            matched_rule_ids=matched_ids,
+            explanation=(
+                f"Request held for REVIEW: Security inspection incomplete (resource limits exceeded or evaluation interrupted). "
+                f"Incomplete inspections must never be automatically allowed."
+            ),
+            decision_source="rag_inspection",
+        )
+
+    # 3. Contextual / Security Review
+    if report.overall_assessment == "REVIEW":
+        return PolicyDecision(
+            decision="REVIEW",
+            risk_score=report.max_risk_score,
+            matched_rule_ids=matched_ids,
+            explanation=report.summary_explanation,
+            decision_source="rag_inspection",
+        )
+
+    # Resolve and validate policy mode
+    effective_mode = validate_ml_enforcement_mode(mode) if mode is not None else get_ml_enforcement_mode()
+
+    # Adapt input to MLAssessment if necessary
+    normalized_ml: Optional[MLAssessment] = None
+    if ml_assessment is not None:
+        if isinstance(ml_assessment, MLAssessment):
+            normalized_ml = ml_assessment
+        else:
+            normalized_ml = MLAssessment.from_inference_result(ml_assessment)
+
+    # 4. Hybrid Evaluation: All RAG tiers passed (ALLOW) and inspection is complete
+    if effective_mode == MLEnforcementMode.BLOCK_ON_THRESHOLD.value:
+        if normalized_ml is not None and normalized_ml.available and normalized_ml.would_block:
+            ml_score = normalized_ml.score if normalized_ml.score is not None else 1.0
+            combined_risk_score = round(max(report.max_risk_score, ml_score), 2)
+            explanation = (
+                f"Request blocked by security policy: ML prompt injection detection threshold met on user query "
+                f"(score: {normalized_ml.score:.4f}, threshold: {normalized_ml.threshold:.2f}, mode: {effective_mode}). "
+                f"Notice: Model score is an uncalibrated heuristic estimate, not a probability guarantee."
+            )
+            return PolicyDecision(
+                decision="BLOCK",
+                risk_score=combined_risk_score,
+                matched_rule_ids=matched_ids,
+                explanation=explanation,
+                decision_source="ml_enforcement",
+            )
+
+    # 5. Default Allow Path
+    explanation = (
+        report.summary_explanation
+        if report.summary_explanation
+        else "Request allowed: All RAG inspection tiers passed."
+    )
+    return PolicyDecision(
+        decision="ALLOW",
+        risk_score=report.max_risk_score,
+        matched_rule_ids=matched_ids,
+        explanation=explanation,
+        decision_source="allow_default",
     )

@@ -57,8 +57,44 @@ Each JSON Lines record conforms to the following schema:
 
 ---
 
+---
+
+## Phase 3 Local RAG Knowledge Corpus (`rag_corpus_v1.jsonl`)
+
+The RAG document corpus is an offline, synthetic document collection designed to evaluate retrieval-augmented generation and indirect prompt injection defenses in Phase 3.
+
+> **Crucial Distinction**:
+> - Phase 2 datasets (`prompts_dataset_v1.jsonl` and `prompts_independent_holdout.jsonl`) are **prompt-level datasets** used strictly to train and evaluate the linear injection classifier.
+> - `rag_corpus_v1.jsonl` is a **document-level corpus** representing external, untrusted knowledge sources retrieved during RAG execution. Documents in this corpus are treated as **untrusted data**, never as trusted system instructions.
+
+### Corpus Summary (14 Synthetic Documents)
+
+| Category | Count | Sample Doc IDs | Purpose & Characteristics |
+| :--- | :---: | :--- | :--- |
+| **Benign Technical Docs** | 2 | `doc-tech-001`, `doc-tech-002` | Real-world engineering architecture & database documentation. |
+| **Mock Customer Support** | 2 | `doc-support-001`, `doc-support-002` | Customer refund rules and account/MFA troubleshooting guides. |
+| **Enterprise Processes** | 2 | `doc-proc-001`, `doc-proc-002` | Post-mortem guidelines and hardware procurement refresh procedures. |
+| **Cybersecurity Education** | 3 | `doc-sec-001` - `doc-sec-003` | Educational articles explaining prompt injection, Zero Trust, and credential security. Used to evaluate **false positive resilience**. |
+| **Security Test Fixtures** | 5 | `doc-attack-001` - `doc-attack-005` | Labelled test fixtures with indirect injection in body, title, or metadata. Used to evaluate **indirect prompt injection detection**. |
+
+### RAG Document Schema
+
+Each line in `rag_corpus_v1.jsonl` is a valid JSON object with the following fields:
+
+| Field | Type | Description |
+| :--- | :--- | :--- |
+| `doc_id` | `string` | Unique identifier (e.g. `doc-tech-001`, `doc-attack-001`). |
+| `title` | `string` | Document title (untrusted, scanned for injection attempts). |
+| `content` | `string` | Document text body (untrusted content). |
+| `source` | `string` | Document origin identifier (e.g. `engineering_wiki`, `synthetic_security_fixtures`). |
+| `tags` | `array[string]` | Keyword categorization tags (untrusted, included in token search). |
+| `metadata` | `object` | Category, fixture flags, and attack type metadata. |
+
+---
+
 ## Limitations
 
-1. **Synthetic Nature**: All prompts are synthetically generated. Real-world adversaries use diverse, multi-turn, and evolving adversarial strategies that synthetic benchmarks cannot fully reflect.
+1. **Synthetic Nature**: All prompts and corpus documents are synthetically generated. Real-world adversaries use diverse, multi-turn, and evolving adversarial strategies that synthetic benchmarks cannot fully reflect.
 2. **Uncalibrated Model Scores**: Model outputs from Logistic Regression are heuristic decision scores, not true Bayesian probabilities.
 3. **Balanced vs. Production Distribution**: Both benchmarks maintain a balanced 50/50 class distribution for symmetric evaluation. Production traffic will feature severe class imbalance ($>99:1$ benign).
+4. **Untrusted Data Boundary**: Presence in `rag_corpus_v1.jsonl` grants zero trust or authorization. Test fixture tags and metadata are for testing categorization only and never exempt documents from security inspection.

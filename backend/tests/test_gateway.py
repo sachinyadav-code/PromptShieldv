@@ -4,7 +4,7 @@ import uuid
 from fastapi.testclient import TestClient
 import pytest
 
-from app.audit.logger import get_audit_events
+from app.audit.logger import get_audit_events, sanitize_audit_id
 from app.detection.ml_classifier import MLInferenceResult, get_classifier
 from app.main import app
 from app.proxy.mock_service import get_mock_call_count, reset_mock_call_count
@@ -779,3 +779,54 @@ def test_request_time_mode_switching_remains_intact():
         reset_ml_enforcement_mode()
         res3 = tc.get("/health")
         assert res3.status_code == 200
+
+
+# 35. Audit sanitizer unit behavior (CWE-117 log forging mitigation)
+def test_audit_sanitizer_unit_behavior():
+    """Verify sanitize_audit_id strips control characters, normalizes disallowed chars, and truncates."""
+    # None and empty strings
+    assert sanitize_audit_id(None) == ""
+    assert sanitize_audit_id("") == ""
+
+    # Safe characters remain unchanged (including standard UUID format)
+    safe_uuid = "req-123e4567-e89b-12d3-a456-426614174000"
+    assert sanitize_audit_id(safe_uuid) == safe_uuid
+    safe_id = "req-123_abc.DEF:456+789"
+    assert sanitize_audit_id(safe_id) == safe_id
+
+    # Control chars (CR, LF, TAB, NUL, DEL, C1 control chars \x80-\x9f) are completely stripped
+    with_ctrl = "req-123\r\n\t\x00\x1f\x7f\x85\x9f-abc"
+    assert sanitize_audit_id(with_ctrl) == "req-123-abc"
+    assert "\r" not in sanitize_audit_id(with_ctrl)
+    assert "\n" not in sanitize_audit_id(with_ctrl)
+    assert "\t" not in sanitize_audit_id(with_ctrl)
+    assert "\x00" not in sanitize_audit_id(with_ctrl)
+    assert "\x7f" not in sanitize_audit_id(with_ctrl)
+
+    # Disallowed characters are replaced with underscore
+    disallowed = "req<script>alert('xss');</script>&foo=bar 123"
+    sanitized = sanitize_audit_id(disallowed)
+    assert "<" not in sanitized
+    assert ">" not in sanitized
+    assert "'" not in sanitized
+    assert ";" not in sanitized
+    assert " " not in sanitized
+    assert "&" not in sanitized
+    assert "=" not in sanitized
+
+    # String composed purely of control characters strips down to empty (or uses safe fallback)
+    assert sanitize_audit_id("\r\n\t\x00\x1f\x7f\x80\x9f") == ""
+    assert sanitize_audit_id("\r\n\t\x00\x1f\x7f\x80\x9f", fallback="safe_fallback") == "safe_fallback"
+    assert sanitize_audit_id(None, fallback="safe_fallback") == "safe_fallback"
+    assert sanitize_audit_id("", fallback="safe_fallback") == "safe_fallback"
+
+    # String composed purely of non-control disallowed characters normalizes to underscores (fallback not used)
+    assert sanitize_audit_id("###$$$%%%") == "_________"
+    assert sanitize_audit_id("###$$$%%%", fallback="safe_fallback") == "_________"
+
+    # Max length bounding and exact truncation
+    long_input = "a" * 200
+    assert len(sanitize_audit_id(long_input)) == 128
+    assert len(sanitize_audit_id(long_input, max_length=64)) == 64
+    exact_128 = "x" * 128
+    assert sanitize_audit_id(exact_128) == exact_128

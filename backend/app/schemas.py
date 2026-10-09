@@ -278,3 +278,261 @@ class HealthResponse(BaseModel):
     status: str
     service: str
     phase: int
+
+
+class RAGRequest(BaseModel):
+    """Incoming request payload for RAG inspection or proxying."""
+
+    query: str = Field(
+        ...,
+        min_length=1,
+        max_length=1000,
+        description="The user search query to inspect and retrieve against.",
+    )
+    top_k: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        strict=True,
+        description="Maximum number of candidate documents to retrieve (1-10, default 3).",
+    )
+    request_id: Optional[str] = Field(
+        default=None,
+        max_length=128,
+        description="Optional client-provided correlation ID (untrusted).",
+    )
+
+    @field_validator("query")
+    @classmethod
+    def validate_query_non_whitespace(cls, v: Any) -> str:
+        """Ensure query is a string and not empty or composed solely of whitespace."""
+        if isinstance(v, bool) or not isinstance(v, str):
+            raise ValueError("Query must be a string, not a boolean.")
+        if not v or not v.strip():
+            raise ValueError("Query cannot be empty or contain only whitespace.")
+        return v
+
+    @field_validator("top_k")
+    @classmethod
+    def validate_top_k_not_bool(cls, v: Any) -> int:
+        """Ensure top_k is an integer and not passed as a boolean."""
+        if isinstance(v, bool):
+            raise ValueError("top_k must be an integer, not a boolean.")
+        return v
+
+
+# Schema alias for RAGRequest
+RAGPromptRequest = RAGRequest
+
+
+class RetrievedDocumentSummary(BaseModel):
+    """Summary metadata for a retrieved document.
+
+    IMPORTANT SECURITY NOTICE:
+    - relevance_score measures keyword overlap ranking and is NOT a security clearance,
+      safety verdict, or authorization signal.
+    - Full raw document content is strictly omitted by default to prevent sensitive
+      data exposure.
+    """
+
+    doc_id: str = Field(..., max_length=64, description="Unique document identifier.")
+    title: str = Field(..., max_length=256, description="Document title.")
+    source: str = Field(..., max_length=256, description="Document origin or source path.")
+    relevance_score: float = Field(
+        ...,
+        ge=0.0,
+        le=1.0,
+        description="Keyword overlap relevance score [0.0, 1.0] for ranking only. NOT a security score.",
+    )
+    matched_tokens: List[str] = Field(
+        default_factory=list,
+        description="List of query tokens that matched this document.",
+    )
+
+
+class DocumentInspectionSummary(BaseModel):
+    """Security inspection summary for an individual retrieved document."""
+
+    doc_id: Optional[str] = Field(default=None, description="Document identifier.")
+    assessment: Literal["ALLOW", "BLOCK", "REVIEW"] = Field(
+        ...,
+        description="Security assessment for this document.",
+    )
+    risk_score: float = Field(
+        ...,
+        ge=0.0,
+        le=1.0,
+        description="Heuristic risk score [0.0, 1.0] for this document.",
+    )
+    matched_rules: List[str] = Field(
+        default_factory=list,
+        description="Security rules matched in this document.",
+    )
+    is_complete: bool = Field(
+        default=True,
+        description="Whether inspection completed fully without exceeding resource limits.",
+    )
+    explanation: str = Field(
+        ...,
+        description="Sanitized summary explanation omitting raw payloads.",
+    )
+
+
+class RAGFindingSummary(BaseModel):
+    """Granular security finding from multi-level RAG inspection."""
+
+    scope: Literal["direct_query", "document", "chunk", "combined_context"]
+    assessment: Literal["ALLOW", "BLOCK", "REVIEW"]
+    rule_id: str
+    doc_id: Optional[str] = None
+    chunk_index: Optional[int] = None
+    char_start: Optional[int] = None
+    char_end: Optional[int] = None
+    risk_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    explanation: str = ""
+
+
+class RAGInspectResponse(BaseModel):
+    """Response payload for the RAG inspection endpoint."""
+
+    decision: Literal["ALLOW", "BLOCK", "REVIEW"] = Field(
+        ...,
+        description="Authoritative security policy decision: ALLOW, BLOCK, or REVIEW.",
+    )
+    decision_source: Optional[Literal["deterministic_rule", "ml_enforcement", "rag_inspection", "allow_default"]] = Field(
+        default=None,
+        description="Origin of the security policy decision.",
+    )
+    risk_score: float = Field(
+        ...,
+        ge=0.0,
+        le=1.0,
+        description="Heuristic security risk score between 0.0 and 1.0 (not a probability).",
+    )
+    request_id: str = Field(
+        ...,
+        description="Authoritative, server-generated unique request identifier.",
+    )
+    client_request_id: Optional[str] = Field(
+        default=None,
+        description="Client-supplied correlation ID, if provided.",
+    )
+    is_complete: bool = Field(
+        ...,
+        description="Whether all inspection tiers completed without exceeding resource limits.",
+    )
+    direct_query_assessment: Literal["ALLOW", "BLOCK", "REVIEW"] = Field(
+        ...,
+        description="Inspection outcome for the user's direct query.",
+    )
+    combined_context_assessment: Literal["ALLOW", "BLOCK", "REVIEW"] = Field(
+        ...,
+        description="Inspection outcome for the combined retrieved context.",
+    )
+    matched_rules: List[str] = Field(
+        default_factory=list,
+        description="All matched security rule identifiers across all tiers.",
+    )
+    explanation: str = Field(
+        ...,
+        description="Sanitized explanation of the inspection outcome.",
+    )
+    retrieved_documents: List[RetrievedDocumentSummary] = Field(
+        default_factory=list,
+        description="Summaries of retrieved documents (excluding raw content).",
+    )
+    document_assessments: List[DocumentInspectionSummary] = Field(
+        default_factory=list,
+        description="Security assessment summaries for each retrieved document.",
+    )
+    findings: List[RAGFindingSummary] = Field(
+        default_factory=list,
+        description="Granular inspection findings.",
+    )
+    ml_assessment: Optional[MLAssessment] = Field(
+        default=None,
+        validation_alias=AliasChoices("ml_assessment", "ml_detection", "ml_analysis"),
+        description="Optional ML injection assessment of the direct query.",
+    )
+
+    @property
+    def ml_detection(self) -> Optional[MLAssessment]:
+        """Alias property for ml_assessment."""
+        return self.ml_assessment
+
+
+class RAGProxyResponse(BaseModel):
+    """Response payload for the RAG proxy endpoint."""
+
+    decision: Literal["ALLOW", "BLOCK", "REVIEW"] = Field(
+        ...,
+        description="Authoritative security policy decision: ALLOW, BLOCK, or REVIEW.",
+    )
+    decision_source: Optional[Literal["deterministic_rule", "ml_enforcement", "rag_inspection", "allow_default"]] = Field(
+        default=None,
+        description="Origin of the security policy decision.",
+    )
+    risk_score: float = Field(
+        ...,
+        ge=0.0,
+        le=1.0,
+        description="Heuristic security risk score between 0.0 and 1.0 (not a probability).",
+    )
+    request_id: str = Field(
+        ...,
+        description="Authoritative, server-generated unique request identifier.",
+    )
+    client_request_id: Optional[str] = Field(
+        default=None,
+        description="Client-supplied correlation ID, if provided.",
+    )
+    is_complete: bool = Field(
+        ...,
+        description="Whether all inspection tiers completed without exceeding resource limits.",
+    )
+    forwarded: bool = Field(
+        ...,
+        description="True if request was forwarded to downstream mock service; False otherwise.",
+    )
+    direct_query_assessment: Literal["ALLOW", "BLOCK", "REVIEW"] = Field(
+        ...,
+        description="Inspection outcome for the user's direct query.",
+    )
+    combined_context_assessment: Literal["ALLOW", "BLOCK", "REVIEW"] = Field(
+        ...,
+        description="Inspection outcome for the combined retrieved context.",
+    )
+    matched_rules: List[str] = Field(
+        default_factory=list,
+        description="All matched security rule identifiers across all tiers.",
+    )
+    explanation: str = Field(
+        ...,
+        description="Sanitized explanation of the policy decision.",
+    )
+    retrieved_documents: List[RetrievedDocumentSummary] = Field(
+        default_factory=list,
+        description="Summaries of retrieved documents (excluding raw content).",
+    )
+    document_assessments: List[DocumentInspectionSummary] = Field(
+        default_factory=list,
+        description="Security assessment summaries for each retrieved document.",
+    )
+    downstream_response: Optional[MockDownstreamResponse] = Field(
+        default=None,
+        description="Downstream response if allowed and forwarded; null if blocked or held for review.",
+    )
+    findings: List[RAGFindingSummary] = Field(
+        default_factory=list,
+        description="Granular inspection findings.",
+    )
+    ml_assessment: Optional[MLAssessment] = Field(
+        default=None,
+        validation_alias=AliasChoices("ml_assessment", "ml_detection", "ml_analysis"),
+        description="Optional ML injection assessment of the direct query.",
+    )
+
+    @property
+    def ml_detection(self) -> Optional[MLAssessment]:
+        """Alias property for ml_assessment."""
+        return self.ml_assessment
