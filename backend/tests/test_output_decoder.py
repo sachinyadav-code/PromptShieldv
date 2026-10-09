@@ -126,6 +126,87 @@ class TestBoundedDecoderUnit:
         with pytest.raises(TypeError):
             decode_for_detection(12345)  # type: ignore
 
+    def test_unicode_escape_decoding_standard_ascii(self):
+        raw = r"\u0073\u006b-abcdef1234567890abcdef1234567890"
+        expected = "sk-abcdef1234567890abcdef1234567890"
+        assert decode_for_detection(raw) == expected
+
+    def test_unicode_escape_8_digit_standard_ascii(self):
+        raw = r"\U00000073\U0000006B-abcdef1234567890abcdef1234567890"
+        expected = "sk-abcdef1234567890abcdef1234567890"
+        assert decode_for_detection(raw) == expected
+
+    def test_unicode_escape_multibyte_and_supplementary(self):
+        assert decode_for_detection(r"\u00E9") == "é"
+        assert decode_for_detection(r"\u00e9") == "é"
+        assert decode_for_detection(r"\U0001F600") == "😀"
+        assert decode_for_detection(r"\U0001f600") == "😀"
+
+    def test_mixed_byte_and_unicode_contiguous_escapes(self):
+        raw = r"\u0073%6b\x2d\U00000070"
+        expected = "sk-p"
+        assert decode_for_detection(raw) == expected
+
+    def test_disallowed_4_digit_uppercase_u_preserved_literally(self):
+        raw = r"\U0073\U006b-test"
+        assert decode_for_detection(raw) == raw
+
+    def test_truncated_byte_run_before_unicode_escape_fails_closed(self):
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection(r"%E2\u0073")
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection(r"\xe2\u0073")
+
+    def test_truncated_byte_run_after_unicode_escape_fails_closed(self):
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection(r"\u0073%E2")
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection(r"\u0073\xe2")
+
+    def test_null_code_point_in_unicode_escape_fails_closed(self):
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection(r"Key: \u0000secret")
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection(r"Key: \U00000000secret")
+
+    def test_surrogate_code_points_fail_closed(self):
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection(r"Token: \uD800")
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection(r"Token: \uDFFF")
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection(r"Token: \U0000D800")
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection(r"Token: \U0000DFFF")
+
+    def test_out_of_range_code_point_fails_closed(self):
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection(r"Token: \U00110000")
+
+    def test_maximum_valid_code_point_decodes_successfully(self):
+        assert decode_for_detection(r"\U0010FFFF") == chr(0x10FFFF)
+
+    def test_incomplete_and_non_hex_unicode_escapes_preserved(self):
+        assert decode_for_detection(r"\u") == r"\u"
+        assert decode_for_detection(r"\u1") == r"\u1"
+        assert decode_for_detection(r"\u12") == r"\u12"
+        assert decode_for_detection(r"\u123") == r"\u123"
+        assert decode_for_detection(r"\U") == r"\U"
+        assert decode_for_detection(r"\U1") == r"\U1"
+        assert decode_for_detection(r"\U1234567") == r"\U1234567"
+        assert decode_for_detection(r"\uZZZZ") == r"\uZZZZ"
+        assert decode_for_detection(r"\UZZZZZZZZ") == r"\UZZZZZZZZ"
+        assert decode_for_detection(r"\upload\file.txt") == r"\upload\file.txt"
+
+    def test_windows_paths_with_u_preserved(self):
+        path = r"C:\Users\admin\Documents\notes.txt and D:\unique\data.csv"
+        assert decode_for_detection(path) == path
+
+    def test_unicode_escape_double_encoded_not_recursively_decoded(self):
+        assert decode_for_detection(r"\u005c\u00750073") == r"\u0073"
+        assert decode_for_detection(r"\u00252D") == "%2D"
+        assert decode_for_detection(r"\u005c\u007873") == r"\x73"
+
 
 class TestEncodedCredentialScanningAndRedaction:
     """Integration tests for OutputScanner and enforce_output_security with encoded credentials."""
@@ -448,3 +529,189 @@ class TestEncodedCredentialScanningAndRedaction:
         assert res.downstream_response is None
         assert res.audit_outcome == "scan_error"
         assert res.error_code == "OUTPUT_LENGTH_EXCEEDED"
+
+    def test_unicode_escaped_openai_key_detected_and_whole_response_redacted(self):
+        """Stage 5.5: Unicode-escaped OpenAI key (\\u0073\\u006b) is detected and whole response redacted."""
+        secret = r"\u0073\u006b-abcdef1234567890abcdef1234567890"
+        message = f"Here is your deployment key: {secret}"
+        mock_resp = MockDownstreamResponse(
+            simulated=True,
+            provider="mock-llm-service",
+            message=message,
+            received_prompt_length=10,
+        )
+
+        res = enforce_output_security(mock_resp)
+        assert res.effective_decision == "ALLOW"
+        assert res.audit_outcome == "redacted"
+        assert res.downstream_response is not None
+        assert res.downstream_response.message == "[REDACTED]"
+        assert res.finding_count == 1
+        assert DLP_RULE_OPENAI_API_KEY in res.matched_rule_ids
+        assert "sk" not in res.downstream_response.message
+        assert r"\u0073" not in res.downstream_response.message
+
+    def test_8_digit_unicode_escaped_openai_key_detected_and_redacted(self):
+        """Stage 5.5: 8-digit Unicode-escaped OpenAI key (\\U00000073\\U0000006B) is detected and redacted."""
+        secret = r"\U00000073\U0000006B-abcdef1234567890abcdef1234567890"
+        mock_resp = MockDownstreamResponse(
+            simulated=True,
+            provider="mock-llm-service",
+            message=f"Key: {secret}",
+            received_prompt_length=10,
+        )
+
+        res = enforce_output_security(mock_resp)
+        assert res.effective_decision == "ALLOW"
+        assert res.audit_outcome == "redacted"
+        assert res.downstream_response is not None
+        assert res.downstream_response.message == "[REDACTED]"
+        assert DLP_RULE_OPENAI_API_KEY in res.matched_rule_ids
+
+    def test_unicode_escaped_database_uri_blocks_egress(self):
+        """Stage 5.5: Unicode-escaped database URI credential blocks egress completely."""
+        db_uri = r"postgres\u003a\u002f\u002fadmin\u003asecret123\u0040localhost\u003a5432\u002fdb"
+        mock_resp = MockDownstreamResponse(
+            simulated=True,
+            provider="mock-llm-service",
+            message=f"Database config: {db_uri}",
+            received_prompt_length=15,
+        )
+
+        res = enforce_output_security(mock_resp)
+        assert res.effective_decision == "BLOCK"
+        assert res.audit_outcome == "blocked"
+        assert res.downstream_response is None
+        assert res.risk_score == 1.0
+        assert DLP_RULE_DATABASE_URI_CREDENTIAL in res.matched_rule_ids
+
+    def test_unicode_escaped_private_key_blocks_egress(self):
+        """Stage 5.5: Unicode-escaped private key header blocks egress completely."""
+        header = r"-----\u0042\u0045\u0047\u0049\u004e RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAzsyntheticKeyData\n-----END RSA PRIVATE KEY-----"
+        mock_resp = MockDownstreamResponse(
+            simulated=True,
+            provider="mock-llm-service",
+            message=f"Key dump:\n{header}",
+            received_prompt_length=20,
+        )
+
+        res = enforce_output_security(mock_resp)
+        assert res.effective_decision == "BLOCK"
+        assert res.audit_outcome == "blocked"
+        assert res.downstream_response is None
+        assert DLP_RULE_PRIVATE_KEY_HEADER in res.matched_rule_ids
+
+    def test_unicode_escaped_aws_key_detected_and_redacted(self):
+        """Stage 5.5: Unicode-escaped AWS access key ID is detected and redacted."""
+        secret = r"\u0041\u004B\u0049\u00411234567890ABCDEF"
+        mock_resp = MockDownstreamResponse(
+            simulated=True,
+            provider="mock-llm-service",
+            message=f"AWS token: {secret}",
+            received_prompt_length=10,
+        )
+
+        res = enforce_output_security(mock_resp)
+        assert res.effective_decision == "ALLOW"
+        assert res.audit_outcome == "redacted"
+        assert res.downstream_response is not None
+        assert res.downstream_response.message == "[REDACTED]"
+        assert DLP_RULE_AWS_ACCESS_KEY_ID in res.matched_rule_ids
+
+    def test_json_structured_response_with_unicode_escaped_credential_redacted(self):
+        """Stage 5.5: JSON response with Unicode-escaped credentials is safe and whole-response redacted."""
+        json_payload = r'{"api_key": "\u0073\u006b-abcdef1234567890abcdef1234567890", "status": "ok"}'
+        mock_resp = MockDownstreamResponse(
+            simulated=True,
+            provider="mock-llm-service",
+            message=json_payload,
+            received_prompt_length=15,
+        )
+
+        res = enforce_output_security(mock_resp)
+        assert res.effective_decision == "ALLOW"
+        assert res.audit_outcome == "redacted"
+        assert res.downstream_response is not None
+        assert res.downstream_response.message == "[REDACTED]"
+        assert DLP_RULE_OPENAI_API_KEY in res.matched_rule_ids
+
+    def test_unicode_escaped_fullwidth_normalized_and_detected(self):
+        """Stage 5.5: Unicode escape of full-width characters is decoded and NFKC-normalized to trigger DLP."""
+        secret = r"\uFF53\uFF4B-abcdef1234567890abcdef1234567890"
+        mock_resp = MockDownstreamResponse(
+            simulated=True,
+            provider="mock-llm-service",
+            message=f"Token: {secret}",
+            received_prompt_length=10,
+        )
+
+        res = enforce_output_security(mock_resp)
+        assert res.effective_decision == "ALLOW"
+        assert res.audit_outcome == "redacted"
+        assert res.downstream_response is not None
+        assert res.downstream_response.message == "[REDACTED]"
+        assert DLP_RULE_OPENAI_API_KEY in res.matched_rule_ids
+
+    def test_unicode_decoding_exception_fails_closed_safely(self):
+        """Stage 5.5: Malformed Unicode escape candidates fail closed without leaking original text."""
+        malformed = r"Dangerous message with surrogate: \uD800 and key \u0073\u006b-abcdef1234567890abcdef1234567890"
+        mock_resp = MockDownstreamResponse(
+            simulated=True,
+            provider="mock-llm-service",
+            message=malformed,
+            received_prompt_length=10,
+        )
+
+        res = enforce_output_security(mock_resp)
+        assert res.effective_decision == "BLOCK"
+        assert res.downstream_response is None
+        assert res.audit_outcome == "scan_error"
+        assert res.error_code == "OUTPUT_SCAN_ERROR"
+
+    def test_benign_windows_paths_and_u_prose_allowed_cleanly(self):
+        """Stage 5.5: Windows paths and text containing \\u / \\Users are allowed without false positives."""
+        clean_msg = r"Check file C:\Users\admin\Documents\report.txt or \upload\file.doc and note \unique behavior."
+        mock_resp = MockDownstreamResponse(
+            simulated=True,
+            provider="mock-llm-service",
+            message=clean_msg,
+            received_prompt_length=15,
+        )
+
+        res = enforce_output_security(mock_resp)
+        assert res.effective_decision == "ALLOW"
+        assert res.audit_outcome == "clean"
+        assert res.downstream_response is not None
+        assert res.downstream_response.message == clean_msg
+        assert res.finding_count == 0
+
+    def test_audit_logs_omit_unicode_escaped_secrets_and_decoded_text(self):
+        """Stage 5.5: Audit logs omit raw Unicode-escaped secrets and decoded intermediate text."""
+        clear_audit_events()
+        secret = r"\u0073\u006b-abcdef1234567890abcdef1234567890"
+        mock_resp = MockDownstreamResponse(
+            simulated=True,
+            provider="mock-llm-service",
+            message=f"Key: {secret}",
+            received_prompt_length=10,
+        )
+
+        res = enforce_output_security(mock_resp)
+        log_output_security_event(
+            request_id="req-audit-unicode-test",
+            endpoint="/api/v1/proxy",
+            outcome=res.audit_outcome,
+            matched_rule_ids=res.matched_rule_ids,
+            finding_count=res.finding_count,
+            client_request_id="client-test-55",
+        )
+
+        events = get_audit_events()
+        assert len(events) > 0
+        last_event = events[-1]
+        serialized = json.dumps(last_event)
+
+        assert r"\u0073\u006b" not in serialized
+        assert "sk-abcdef1234567890abcdef1234567890" not in serialized
+        assert "abcdef1234567890" not in serialized
+        clear_audit_events()
