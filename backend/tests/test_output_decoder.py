@@ -291,6 +291,127 @@ class TestBoundedDecoderUnit:
         assert decode_for_detection(r"\u00252D") == "%2D"
         assert decode_for_detection(r"\u005c\u007873") == r"\x73"
 
+    # -------------------------------------------------------------------------
+    # Stage 5.7: HTML Numeric Character Reference Unit Tests
+    # -------------------------------------------------------------------------
+
+    def test_html_decimal_numeric_reference_decoding(self):
+        """Stage 5.7: Decimal numeric references decode to expected Unicode characters."""
+        assert decode_for_detection("&#115;&#107;&#45;") == "sk-"
+        assert decode_for_detection("Hello &#87;&#111;&#114;&#108;&#100;!") == "Hello World!"
+        assert decode_for_detection("Cost: &#36;100 &#8364;85") == "Cost: $100 \u20ac85"
+
+    def test_html_hex_numeric_reference_lowercase_and_uppercase(self):
+        """Stage 5.7: Hexadecimal numeric references decode with 'x' and 'X', mixed case hex digits."""
+        assert decode_for_detection("&#x73;&#x6b;&#x2d;") == "sk-"
+        assert decode_for_detection("&#X73;&#X6B;&#X2D;") == "sk-"
+        assert decode_for_detection("&#x0073;&#X006B;&#x002d;") == "sk-"
+        assert decode_for_detection("&#x41;&#X4b;&#x49;&#X41;") == "AKIA"
+
+    def test_html_numeric_leading_zeros_decimal_and_hex(self):
+        """Stage 5.7: Arbitrarily many leading zeros in decimal and hex decode without integer overflow."""
+        assert decode_for_detection("&#00000000000000000115;") == "s"
+        assert decode_for_detection("&#x000000000000000073;") == "s"
+        assert decode_for_detection("&#X00000000000000000000000073;") == "s"
+        # 100 leading zeros
+        hundred_zeros = "0" * 100
+        assert decode_for_detection(f"&#{hundred_zeros}115;") == "s"
+        assert decode_for_detection(f"&#x{hundred_zeros}73;") == "s"
+
+    def test_html_numeric_supplementary_characters_and_emojis(self):
+        """Stage 5.7: Supplementary plane characters and emojis decode properly directly from code point."""
+        assert decode_for_detection("&#128512;") == "\U0001F600"
+        assert decode_for_detection("&#x1F600;") == "\U0001F600"
+        assert decode_for_detection("&#X1f600;") == "\U0001F600"
+
+    def test_html_numeric_boundary_code_points(self):
+        """Stage 5.7: Maximum Unicode code point (U+10FFFF) decodes cleanly."""
+        assert decode_for_detection("&#1114111;") == "\U0010FFFF"
+        assert decode_for_detection("&#x10FFFF;") == "\U0010FFFF"
+        assert decode_for_detection("&#X10ffff;") == "\U0010FFFF"
+
+    def test_html_null_code_points_fail_closed(self):
+        """Stage 5.7: Null character references (&#0;, &#x0;) fail closed with OutputDecodingError."""
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection("&#0;")
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection("&#00000000;")
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection("&#x0;")
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection("&#x00000000;")
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection("sk-&#0;key")
+
+    def test_html_surrogate_code_points_fail_closed(self):
+        """Stage 5.7: Surrogate code points in HTML numeric references fail closed."""
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection("&#55296;")  # 0xD800
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection("&#57343;")  # 0xDFFF
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection("&#xD800;")
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection("&#xdfff;")
+        # Surrogate pairs represented as two HTML numeric entities fail closed
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection("&#xD83D;&#xDE00;")
+
+    def test_html_out_of_range_and_capped_overflow_fail_closed(self):
+        """Stage 5.7: Code points > 0x10FFFF fail closed."""
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection("&#1114112;")  # 0x110000
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection("&#x110000;")
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection("&#999999999999999999999999999999999999;")
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection("&#xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF;")
+
+    def test_html_long_digit_run_performance_and_no_unbounded_allocation(self):
+        """Stage 5.7: Long digit sequence runs parse in linear time with bounded accumulator."""
+        long_zeros = "&#" + ("0" * 20000) + "115;"
+        assert decode_for_detection(long_zeros) == "s"
+
+        long_overflow = "&#" + ("9" * 20000) + ";"
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection(long_overflow)
+
+    def test_html_missing_semicolon_and_malformed_syntax_preserved_literally(self):
+        """Stage 5.7: Missing semicolon or malformed HTML entities are preserved as literal text."""
+        assert decode_for_detection("&#115") == "&#115"
+        assert decode_for_detection("&#x73") == "&#x73"
+        assert decode_for_detection("&#;") == "&#;"
+        assert decode_for_detection("&#x;") == "&#x;"
+        assert decode_for_detection("&amp;") == "&amp;"
+        assert decode_for_detection("AT&T and &#12345 without semi") == "AT&T and &#12345 without semi"
+        assert decode_for_detection("&#xyz;") == "&#xyz;"
+
+    def test_html_single_pass_non_recursive_decoding(self):
+        """Stage 5.7: HTML entities decode in a single pass without recursive evaluation."""
+        assert decode_for_detection("&#38;#115;") == "&#115;"
+        assert decode_for_detection("&#x26;#x73;") == "&#x73;"
+        assert decode_for_detection("&#38;amp;") == "&amp;"
+
+    def test_html_mixed_with_byte_and_unicode_escapes(self):
+        """Stage 5.7: Contiguous blocks mixing HTML, percent, hex, and Unicode escapes decode cleanly."""
+        assert decode_for_detection(r"&#115;%6b\x2d\u0061&#x62;") == "sk-ab"
+        assert (
+            decode_for_detection(r"&#00000115;\x6b%2D\U00000061&#X62;")
+            == "sk-ab"
+        )
+
+    def test_html_malformed_byte_runs_adjacent_fail_closed(self):
+        """Stage 5.7: Malformed byte runs adjacent to HTML numeric entities fail closed."""
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection("%E2&#115;")
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection("&#115;%E2")
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection(r"\xe2&#x73;")
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection(r"&#x73;\xe2")
+
 
 class TestEncodedCredentialScanningAndRedaction:
     """Integration tests for OutputScanner and enforce_output_security with encoded credentials."""
@@ -856,3 +977,138 @@ class TestEncodedCredentialScanningAndRedaction:
         assert res.audit_outcome == "blocked"
         assert res.downstream_response is None
         assert DLP_RULE_DATABASE_URI_CREDENTIAL in res.matched_rule_ids
+
+    # -------------------------------------------------------------------------
+    # Stage 5.7: HTML Numeric Entity Credential Scanning & Enforcement Tests
+    # -------------------------------------------------------------------------
+
+    def test_html_encoded_openai_key_detected_and_whole_response_redacted(self):
+        """Stage 5.7: HTML numeric reference encoded OpenAI key triggers whole-response redaction."""
+        # 'sk-' encoded as &#115;&#107;&#45;
+        encoded = "&#115;&#107;&#45;abcdef1234567890abcdef1234567890"
+        raw_output = f"Your secret key is: {encoded}"
+        mock_resp = MockDownstreamResponse(
+            simulated=True,
+            provider="mock-llm-service",
+            message=raw_output,
+            received_prompt_length=15,
+        )
+
+        res = enforce_output_security(mock_resp)
+        assert res.effective_decision == "ALLOW"
+        assert res.audit_outcome == "redacted"
+        assert res.downstream_response is not None
+        assert res.downstream_response.message == "[REDACTED]"
+        assert res.finding_count == 1
+        assert DLP_RULE_OPENAI_API_KEY in res.matched_rule_ids
+
+    def test_html_leading_zero_encoded_openai_key_detected_and_redacted(self):
+        """Stage 5.7: HTML numeric references with many leading zeros are decoded and redacted."""
+        # 's' as &#000000000000000000000000000115; 'k' as &#x000000000000000000000006b; '-' as &#45;
+        encoded = "&#000000000000000000000000000115;&#x000000000000000000000006b;&#45;abcdef1234567890abcdef1234567890"
+        raw_output = f"Token: {encoded}"
+        mock_resp = MockDownstreamResponse(
+            simulated=True,
+            provider="mock-llm-service",
+            message=raw_output,
+            received_prompt_length=15,
+        )
+
+        res = enforce_output_security(mock_resp)
+        assert res.effective_decision == "ALLOW"
+        assert res.audit_outcome == "redacted"
+        assert res.downstream_response is not None
+        assert res.downstream_response.message == "[REDACTED]"
+        assert res.finding_count == 1
+        assert DLP_RULE_OPENAI_API_KEY in res.matched_rule_ids
+
+    def test_html_encoded_critical_private_key_blocks_egress(self):
+        """Stage 5.7: HTML encoded critical private key header blocks egress."""
+        # '-----BEGIN RSA PRIVATE KEY-----'
+        encoded_header = "&#45;&#45;&#45;&#45;&#45;BEGIN RSA PRIVATE KEY&#45;&#45;&#45;&#45;&#45;"
+        raw_output = f"{encoded_header}\nMIIEowIBAAKCAQEAz9..."
+        mock_resp = MockDownstreamResponse(
+            simulated=True,
+            provider="mock-llm-service",
+            message=raw_output,
+            received_prompt_length=15,
+        )
+
+        res = enforce_output_security(mock_resp)
+        assert res.effective_decision == "BLOCK"
+        assert res.audit_outcome == "blocked"
+        assert res.downstream_response is None
+        assert DLP_RULE_PRIVATE_KEY_HEADER in res.matched_rule_ids
+
+    def test_html_encoded_critical_database_uri_blocks_egress(self):
+        """Stage 5.7: HTML encoded critical database URI credentials block egress."""
+        # postgres://admin:secret123@localhost:5432/db with hex and decimal references
+        encoded_uri = "postgres&#x3a;&#x2f;&#x2f;admin&#58;secret123&#64;localhost&#58;5432&#x2f;db"
+        raw_output = f"Connecting string: {encoded_uri}"
+        mock_resp = MockDownstreamResponse(
+            simulated=True,
+            provider="mock-llm-service",
+            message=raw_output,
+            received_prompt_length=15,
+        )
+
+        res = enforce_output_security(mock_resp)
+        assert res.effective_decision == "BLOCK"
+        assert res.audit_outcome == "blocked"
+        assert res.downstream_response is None
+        assert DLP_RULE_DATABASE_URI_CREDENTIAL in res.matched_rule_ids
+
+    def test_html_benign_document_allowed_clean_and_unmodified(self):
+        """Stage 5.7: Benign HTML document with character references is preserved unmodified and clean."""
+        benign_msg = (
+            "<p>PromptShield &amp; Security: &#169; 2026 PromptShield Inc. "
+            "Price: &#x24;100 &#8364;85. Code: &#x3c;safe&#x3e;.</p>"
+        )
+        mock_resp = MockDownstreamResponse(
+            simulated=True,
+            provider="mock-llm-service",
+            message=benign_msg,
+            received_prompt_length=25,
+        )
+
+        res = enforce_output_security(mock_resp)
+        assert res.effective_decision == "ALLOW"
+        assert res.audit_outcome == "clean"
+        assert res.downstream_response is not None
+        # In single-pass non-redacted flow, output matches original text exactly
+        assert res.downstream_response.message == benign_msg
+        assert res.finding_count == 0
+
+    def test_html_audit_logs_omit_secrets_and_decoded_scratchpad(self):
+        """Stage 5.7: Audit logs omit raw/decoded secrets and decoded scratchpad."""
+        clear_audit_events()
+        encoded = "&#115;&#107;&#45;secretkey99999999999999999999"
+        raw_output = f"Leaked: {encoded}"
+        mock_resp = MockDownstreamResponse(
+            simulated=True,
+            provider="mock-llm-service",
+            message=raw_output,
+            received_prompt_length=15,
+        )
+
+        res = enforce_output_security(mock_resp)
+        log_output_security_event(
+            request_id="req-audit-html-test",
+            endpoint="/api/v1/proxy",
+            outcome=res.audit_outcome,
+            matched_rule_ids=res.matched_rule_ids,
+            finding_count=res.finding_count,
+            client_request_id="client-test-57",
+        )
+
+        events = get_audit_events()
+        assert len(events) > 0
+        last_event = events[-1]
+        serialized = json.dumps(last_event)
+
+        assert "&#115;&#107;" not in serialized
+        assert "sk-secretkey99999999999999999999" not in serialized
+        assert "secretkey99999999999999999999" not in serialized
+        assert "decoded_scratchpad" not in serialized
+        assert res.audit_outcome == "redacted"
+        clear_audit_events()

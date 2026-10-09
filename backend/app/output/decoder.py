@@ -5,22 +5,24 @@ Provides single-pass bounded decoding for detection scratchpads, supporting:
 2. Textual hexadecimal escape sequences (e.g. \x73\x6b)
 3. Textual Unicode escape sequences (e.g. \u0073\u006b, \U00000073\U0000006b)
    with RFC 8259 compliant bounded UTF-16 surrogate-pair recombination (\uD83D\uDE00 -> 😀)
+4. HTML numeric character references (e.g. &#115;, &#x73;, &#X73;) with capped
+   accumulator parsing for arbitrarily many leading zeros and overflow protection
 
 Enforces strict input length bounds, decoded buffer bounds, and fail-closed handling
 for malformed encoding sequences (such as invalid UTF-8 byte sequences, embedded null bytes,
-unpaired surrogates, 8-digit surrogates, or out-of-range scalars),
+unpaired surrogates, 8-digit surrogates, HTML surrogates, or out-of-range scalars),
 while preserving ordinary text containing literal percent signs, incomplete markers,
-and unrelated backslashes.
+and unrelated backslashes or ampersands.
 
 IMPORTANT SAFETY INVARIANTS:
 1. Decoding is performed in a single bounded pass. Double-encoded inputs (e.g. %252D,
-   \x252D, \u005c\u00750073) are NOT recursively decoded.
+   \x252D, \u005c\u00750073, &#38;#115;) are NOT recursively decoded.
 2. Decoded text is NEVER executed or treated as executable code.
 3. Decoded buffer sizes are strictly bounded by MAX_DECODED_TEXT_LENGTH.
 4. Benign text containing literal %, incomplete markers (%2, %zz), and unrelated
-   backslashes (\n, \t, \path, \u, \u1, \U, \U0073) are preserved without causing
-   scan errors or blocking.
-5. Candidates selected for decoding (%HH, \xHH, \uXXXX, \UXXXXXXXX) that cannot be safely
+   backslashes (\n, \t, \path, \u, \u1, \U, \U0073) or ampersands (AT&T, C&#, &#, &#;)
+   are preserved without causing scan errors or blocking.
+5. Candidates selected for decoding (%HH, \xHH, \uXXXX, \UXXXXXXXX, &#...;) that cannot be safely
    processed as valid UTF-8 or valid Unicode code points raise OutputDecodingError,
    failing closed at the service boundary.
 """
@@ -40,10 +42,10 @@ MAX_INPUT_TEXT_LENGTH: int = MAX_OUTPUT_TEXT_LENGTH  # 25,000 characters
 # Maximum allowed decoded buffer length
 MAX_DECODED_TEXT_LENGTH: int = 100_000  # 100,000 characters
 
-# Regex matching contiguous blocks of URL percent escapes, hex escapes, and Unicode escapes
-# Matches contiguous sequences of %HH, \xHH, \XHH, \uXXXX, or \UXXXXXXXX
+# Regex matching contiguous blocks of URL percent escapes, hex escapes, Unicode escapes, and HTML numeric character references
+# Matches contiguous sequences of %HH, \xHH, \XHH, \uXXXX, \UXXXXXXXX, &#digits;, or &#xhex;
 _PATTERN_ESCAPE_BLOCK = re.compile(
-    r"(?:%[0-9a-fA-F]{2}|\\[xX][0-9a-fA-F]{2}|\\[u][0-9a-fA-F]{4}|\\[U][0-9a-fA-F]{8})+"
+    r"(?:%[0-9a-fA-F]{2}|\\[xX][0-9a-fA-F]{2}|\\[u][0-9a-fA-F]{4}|\\[U][0-9a-fA-F]{8}|&#(?:[0-9]+|[xX][0-9a-fA-F]+);)+"
 )
 
 
@@ -59,6 +61,41 @@ class OutputDecodedLengthExceededError(OutputLengthExceededError, OutputDecoding
         super().__init__(length=length, max_length=max_length)
 
 
+def _parse_html_numeric_entity(content: str) -> int:
+    """Parse decimal or hex HTML numeric entity content with a capped accumulator.
+
+    Handles arbitrarily many leading zeros in O(digits) time without allocating
+    arbitrary-precision Python integers or triggering integer string limits.
+    Once saturated at 0x110000, keeps the value saturated while consuming all digits.
+    """
+    if content.startswith(("x", "X")):
+        base = 16
+        digits = content[1:]
+    else:
+        base = 10
+        digits = content
+
+    val = 0
+    CEILING = 0x110000
+
+    for ch in digits:
+        if base == 10:
+            d = ord(ch) - 48
+        else:
+            if "0" <= ch <= "9":
+                d = ord(ch) - 48
+            elif "a" <= ch <= "f":
+                d = ord(ch) - 87
+            else:
+                d = ord(ch) - 55
+
+        val = val * base + d
+        if val > CEILING:
+            val = CEILING
+
+    return val
+
+
 def decode_for_detection(
     text: str,
     max_input_length: int = MAX_INPUT_TEXT_LENGTH,
@@ -68,17 +105,21 @@ def decode_for_detection(
 
     Decoding rules:
     - Decodes URL percent-encoded bytes (`%HH`), textual hex escapes (`\xHH`),
-      and textual Unicode escapes (`\uXXXX`, `\UXXXXXXXX`).
+      textual Unicode escapes (`\uXXXX`, `\UXXXXXXXX`), and HTML numeric
+      character references (`&#digits;`, `&#xhex;`, `&#Xhex;`).
     - Recombines valid RFC 8259 UTF-16 surrogate pairs (`\uD800..\uDBFF` immediately
       followed by `\uDC00..\uDFFF`) into the corresponding 21-bit Unicode scalar.
+    - Accumulates HTML numeric reference digits with a capped accumulator, supporting
+      arbitrarily many leading zeros without big-integer allocation.
     - Performs a single bounded pass; double-encoded inputs (e.g. `%252D`, `\x252D`,
-      `\u005c\u00750073`) are NOT recursively decoded.
+      `\u005c\u00750073`, `&#38;#115;`) are NOT recursively decoded.
     - Never executes decoded text or treats it as code.
-    - Preserves literal `%`, incomplete markers (`%`, `%1`, `%zz`), and unrelated
-      backslashes (`\n`, `\t`, `\path`, `\x`, `\u`, `\u1`, `\U`, `\U0073`).
+    - Preserves literal `%`, incomplete markers (`%`, `%1`, `%zz`), unrelated
+      backslashes (`\n`, `\t`, `\path`, `\x`, `\u`, `\u1`, `\U`, `\U0073`),
+      and unrelated ampersands (`AT&T`, `C&#`, `&#`, `&#;`, `&#xyz;`).
     - Rejects malformed candidate escape sequences (invalid UTF-8 bytes, truncated
       multibyte sequences, embedded null bytes, unpaired surrogates, 8-digit surrogates,
-      out-of-range scalars) by raising OutputDecodingError.
+      HTML surrogates, out-of-range scalars) by raising OutputDecodingError.
     - Enforces input-length and decoded-buffer boundaries.
 
     Args:
@@ -106,13 +147,14 @@ def decode_for_detection(
     if input_len == 0:
         return ""
 
-    # Fast-path check: if none of '%', '\\x', '\\X', '\\u', '\\U' are present, no decoding is needed
+    # Fast-path check: if none of '%', '\\x', '\\X', '\\u', '\\U', '&#" are present, no decoding is needed
     if (
         "%" not in text
         and r"\x" not in text
         and r"\X" not in text
         and r"\u" not in text
         and r"\U" not in text
+        and "&#" not in text
     ):
         return text
 
@@ -204,6 +246,25 @@ def decode_for_detection(
                     )
                 result_chars.append(chr(code_point))
                 i += 10
+            elif block[i : i + 2] == "&#":
+                semi_idx = block.find(";", i + 2)
+                content = block[i + 2 : semi_idx]
+                code_point = _parse_html_numeric_entity(content)
+                if code_point == 0:
+                    raise OutputDecodingError(
+                        "Null code point (&#0; or &#x0;) in HTML entity candidate is not permitted."
+                    )
+                if 0xD800 <= code_point <= 0xDFFF:
+                    raise OutputDecodingError(
+                        f"Surrogate code point (U+{code_point:04X}) in HTML entity candidate is not permitted."
+                    )
+                if code_point > 0x10FFFF:
+                    raise OutputDecodingError(
+                        f"Code point out of range (U+{code_point:X} > U+10FFFF) in HTML entity candidate is not permitted."
+                    )
+                _flush_byte_run()
+                result_chars.append(chr(code_point))
+                i = semi_idx + 1
             else:
                 raise OutputDecodingError(
                     f"Unexpected token in escape block: {block[i:]}"
