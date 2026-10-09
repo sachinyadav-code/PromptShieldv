@@ -4,10 +4,18 @@ import threading
 from typing import List, Optional, Sequence, Tuple
 import uuid
 
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.audit.logger import log_rag_security_event, log_security_event
+from app.auth import (
+    HEADER_CONTENT_TYPE_OPTIONS,
+    HEADER_FRAME_OPTIONS,
+    HEADER_REFERRER_POLICY,
+    authenticate_request,
+    get_allowed_origins,
+)
 from app.detection.ml_classifier import get_classifier
 from app.detection.rules import get_configured_rules, scan_prompt
 from app.output import enforce_output_security
@@ -62,6 +70,44 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# 1. Configurable CORS policy middleware
+class DynamicCORSMiddleware:
+    """Dynamically applies CORSMiddleware based on PROMPTSHIELD_ALLOWED_ORIGINS.
+
+    Allows runtime and per-test environment variable configuration of allowed origins.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        origins = get_allowed_origins()
+        if origins and scope["type"] == "http":
+            cors = CORSMiddleware(
+                self.app,
+                allow_origins=origins,
+                allow_credentials=False,
+                allow_methods=["GET", "POST", "OPTIONS"],
+                allow_headers=["Authorization", "X-API-Key", "Content-Type"],
+            )
+            await cors(scope, receive, send)
+        else:
+            await self.app(scope, receive, send)
+
+
+app.add_middleware(DynamicCORSMiddleware)
+
+
+# 2. HTTP Security response headers middleware
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next) -> Response:
+    """Consistently apply enterprise HTTP security response headers."""
+    response: Response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = HEADER_CONTENT_TYPE_OPTIONS
+    response.headers["X-Frame-Options"] = HEADER_FRAME_OPTIONS
+    response.headers["Referrer-Policy"] = HEADER_REFERRER_POLICY
+    return response
+
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
@@ -70,6 +116,11 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={"detail": "Internal gateway error occurred."},
+        headers={
+            "X-Content-Type-Options": HEADER_CONTENT_TYPE_OPTIONS,
+            "X-Frame-Options": HEADER_FRAME_OPTIONS,
+            "Referrer-Policy": HEADER_REFERRER_POLICY,
+        },
     )
 
 
@@ -83,8 +134,13 @@ def health_check() -> HealthResponse:
     )
 
 
-@app.get("/api/v1/rules", response_model=List[RuleInfo])
+@app.get(
+    "/api/v1/rules",
+    response_model=List[RuleInfo],
+    dependencies=[Depends(authenticate_request)],
+)
 def list_rules() -> List[RuleInfo]:
+
     """Return list of active deterministic detection rules and configured actions."""
     rules = get_configured_rules()
     return [
@@ -125,7 +181,11 @@ def _get_ml_assessment(prompt: str) -> MLAssessment:
         )
 
 
-@app.post("/api/v1/inspect", response_model=InspectResponse)
+@app.post(
+    "/api/v1/inspect",
+    response_model=InspectResponse,
+    dependencies=[Depends(authenticate_request)],
+)
 def inspect_prompt(payload: PromptRequest) -> InspectResponse:
     """Inspect user prompt against security rules and return an authoritative decision.
 
@@ -161,8 +221,13 @@ def inspect_prompt(payload: PromptRequest) -> InspectResponse:
     )
 
 
-@app.post("/api/v1/proxy", response_model=ProxyResponse)
+@app.post(
+    "/api/v1/proxy",
+    response_model=ProxyResponse,
+    dependencies=[Depends(authenticate_request)],
+)
 def proxy_prompt(payload: PromptRequest) -> ProxyResponse:
+
     """Inspect prompt and forward to mock downstream service ONLY if allowed.
 
     If decision is BLOCK, the mock service is never called.
@@ -330,7 +395,11 @@ def assemble_rag_downstream_prompt(query: str, documents: Sequence[Document]) ->
 # ---------------------------------------------------------------------------
 
 
-@app.post("/api/v1/rag/inspect", response_model=RAGInspectResponse)
+@app.post(
+    "/api/v1/rag/inspect",
+    response_model=RAGInspectResponse,
+    dependencies=[Depends(authenticate_request)],
+)
 def inspect_rag(payload: RAGRequest) -> RAGInspectResponse:
     """Inspect user query and retrieved context without forwarding to mock downstream."""
     server_request_id = str(uuid.uuid4())
@@ -501,7 +570,11 @@ def inspect_rag(payload: RAGRequest) -> RAGInspectResponse:
     )
 
 
-@app.post("/api/v1/rag/proxy", response_model=RAGProxyResponse)
+@app.post(
+    "/api/v1/rag/proxy",
+    response_model=RAGProxyResponse,
+    dependencies=[Depends(authenticate_request)],
+)
 def proxy_rag(payload: RAGRequest) -> RAGProxyResponse:
     """Inspect query and retrieved context; forward to mock downstream ONLY if ALLOW."""
     server_request_id = str(uuid.uuid4())

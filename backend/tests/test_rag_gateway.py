@@ -1117,12 +1117,16 @@ def test_global_exception_handler_sanitizes_500_response(monkeypatch):
     monkeypatch.setattr("app.main.get_configured_rules", faulty_handler)
 
     with TestClient(app, raise_server_exceptions=False) as safe_client:
-        response = safe_client.get("/api/v1/rules")
+        response = safe_client.get(
+            "/api/v1/rules",
+            headers={"Authorization": "Bearer ps-test-suite-key-2026"},
+        )
         assert response.status_code == 500
         data = response.json()
 
         assert data == {"detail": "Internal gateway error occurred."}
         assert sensitive_token not in str(data)
+
 
 
 # ---------------------------------------------------------------------------

@@ -760,25 +760,27 @@ def test_app_startup_respects_programmatic_override(monkeypatch):
 
 
 # 34. Existing request-time dynamic mode switching remains intact after startup
-def test_request_time_mode_switching_remains_intact():
+def test_request_time_mode_switching_remains_intact(client: TestClient):
     """Verify runtime policy mode switching works dynamically across requests without restarting app."""
     from app.policies.engine import reset_ml_enforcement_mode, set_ml_enforcement_mode
-    with TestClient(app) as tc:
-        # Step A: default observe mode
-        res1 = tc.post("/api/v1/inspect", json={"prompt": "Harmless query."})
-        assert res1.status_code == 200
-        assert res1.json()["decision"] == "ALLOW"
+    tc = client
+    # Step A: default observe mode
+    res1 = tc.post("/api/v1/inspect", json={"prompt": "Harmless query."})
+    assert res1.status_code == 200
+    assert res1.json()["decision"] == "ALLOW"
 
-        # Step B: dynamically switch to block_on_threshold at runtime
-        set_ml_enforcement_mode("block_on_threshold")
-        res2 = tc.post("/api/v1/inspect", json={"prompt": "Harmless query."})
-        assert res2.status_code == 200
-        assert res2.json()["decision"] == "ALLOW"
 
-        # Step C: dynamically reset mode
-        reset_ml_enforcement_mode()
-        res3 = tc.get("/health")
-        assert res3.status_code == 200
+    # Step B: dynamically switch to block_on_threshold at runtime
+    set_ml_enforcement_mode("block_on_threshold")
+    res2 = tc.post("/api/v1/inspect", json={"prompt": "Harmless query."})
+    assert res2.status_code == 200
+    assert res2.json()["decision"] == "ALLOW"
+
+    # Step C: dynamically reset mode
+    reset_ml_enforcement_mode()
+    res3 = tc.get("/health")
+    assert res3.status_code == 200
+
 
 
 # 35. Audit sanitizer unit behavior (CWE-117 log forging mitigation)
