@@ -16,6 +16,11 @@ from app.auth import (
     authenticate_request,
     get_allowed_origins,
 )
+from app.limits import (
+    enforce_concurrency_limit,
+    enforce_rate_limit,
+    validate_limits_configuration,
+)
 from app.detection.ml_classifier import get_classifier
 from app.detection.rules import get_configured_rules, scan_prompt
 from app.output import enforce_output_security
@@ -54,10 +59,11 @@ logger = logging.getLogger("promptshield.gateway")
 async def lifespan(app: FastAPI):
     """FastAPI application lifespan context manager.
 
-    Validates effective ML enforcement policy configuration on startup before accepting requests.
+    Validates effective ML enforcement policy and limits configuration on startup before accepting requests.
     """
     logger.info("Initializing PromptShield Gateway...")
     mode = validate_startup_configuration()
+    validate_limits_configuration()
     logger.info("PromptShield Gateway initialized with ML enforcement mode: %s", mode)
     yield
     logger.info("Shutting down PromptShield Gateway...")
@@ -137,7 +143,7 @@ def health_check() -> HealthResponse:
 @app.get(
     "/api/v1/rules",
     response_model=List[RuleInfo],
-    dependencies=[Depends(authenticate_request)],
+    dependencies=[Depends(authenticate_request), Depends(enforce_rate_limit)],
 )
 def list_rules() -> List[RuleInfo]:
 
@@ -184,7 +190,11 @@ def _get_ml_assessment(prompt: str) -> MLAssessment:
 @app.post(
     "/api/v1/inspect",
     response_model=InspectResponse,
-    dependencies=[Depends(authenticate_request)],
+    dependencies=[
+        Depends(authenticate_request),
+        Depends(enforce_rate_limit),
+        Depends(enforce_concurrency_limit),
+    ],
 )
 def inspect_prompt(payload: PromptRequest) -> InspectResponse:
     """Inspect user prompt against security rules and return an authoritative decision.
@@ -224,7 +234,11 @@ def inspect_prompt(payload: PromptRequest) -> InspectResponse:
 @app.post(
     "/api/v1/proxy",
     response_model=ProxyResponse,
-    dependencies=[Depends(authenticate_request)],
+    dependencies=[
+        Depends(authenticate_request),
+        Depends(enforce_rate_limit),
+        Depends(enforce_concurrency_limit),
+    ],
 )
 def proxy_prompt(payload: PromptRequest) -> ProxyResponse:
 
@@ -398,7 +412,11 @@ def assemble_rag_downstream_prompt(query: str, documents: Sequence[Document]) ->
 @app.post(
     "/api/v1/rag/inspect",
     response_model=RAGInspectResponse,
-    dependencies=[Depends(authenticate_request)],
+    dependencies=[
+        Depends(authenticate_request),
+        Depends(enforce_rate_limit),
+        Depends(enforce_concurrency_limit),
+    ],
 )
 def inspect_rag(payload: RAGRequest) -> RAGInspectResponse:
     """Inspect user query and retrieved context without forwarding to mock downstream."""
@@ -573,7 +591,11 @@ def inspect_rag(payload: RAGRequest) -> RAGInspectResponse:
 @app.post(
     "/api/v1/rag/proxy",
     response_model=RAGProxyResponse,
-    dependencies=[Depends(authenticate_request)],
+    dependencies=[
+        Depends(authenticate_request),
+        Depends(enforce_rate_limit),
+        Depends(enforce_concurrency_limit),
+    ],
 )
 def proxy_rag(payload: RAGRequest) -> RAGProxyResponse:
     """Inspect query and retrieved context; forward to mock downstream ONLY if ALLOW."""

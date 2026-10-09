@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.audit.logger import clear_audit_events
 from app.auth import ENV_API_KEYS, ENV_AUTH_ENABLED
+from app.limits import reset_limits_state
 from app.main import app, reset_rag_corpus
 from app.policies.engine import reset_ml_enforcement_mode
 from app.proxy.mock_service import reset_mock_call_count
@@ -15,7 +16,7 @@ TEST_API_KEY = "ps-test-suite-key-2026"
 
 @pytest.fixture(autouse=True)
 def reset_gateway_state():
-    """Reset mock downstream invocation counter, audit logs, policy mode, RAG corpus, and auth env before each test."""
+    """Reset mock downstream invocation counter, audit logs, policy mode, RAG corpus, auth env, and limits before each test."""
     os.environ[ENV_AUTH_ENABLED] = "true"
     os.environ[ENV_API_KEYS] = TEST_API_KEY
 
@@ -23,11 +24,13 @@ def reset_gateway_state():
     clear_audit_events()
     reset_ml_enforcement_mode()
     reset_rag_corpus()
+    reset_limits_state()
     yield
     reset_mock_call_count()
     clear_audit_events()
     reset_ml_enforcement_mode()
     reset_rag_corpus()
+    reset_limits_state()
 
 
 
