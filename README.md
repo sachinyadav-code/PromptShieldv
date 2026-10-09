@@ -206,6 +206,38 @@ Invoke-RestMethod -Uri http://127.0.0.1:8000/api/v1/proxy -Method POST -ContentT
 ```
 **Response:** Returns `decision: BLOCK` and `downstream_response: null`. The downstream service is never contacted.
 
+### Query Persisted Audit Events (`GET /api/v1/audit/events`)
+Requires API-key authentication header (e.g. `Authorization: Bearer <key>`) and respects gateway rate-limiting.
+```powershell
+$headers = @{ "Authorization" = "Bearer ps-test-suite-key-2026" }
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/audit/events?limit=20&decision=BLOCK" -Method GET -Headers $headers
+```
+**Response (HTTP 200):**
+```json
+{
+  "events": [
+    {
+      "event_id": "e10fd116-e473-4f06-ad29-8a7b4e60c475",
+      "request_id": "e10fd116-e473-4f06-ad29-8a7b4e60c475",
+      "client_request_id": null,
+      "timestamp": "2026-10-10T00:00:00.000000+00:00",
+      "endpoint": "/api/v1/inspect",
+      "event_type": "security_inspection",
+      "decision": "BLOCK",
+      "decision_source": "deterministic_rule",
+      "matched_rule_ids": ["RULE_INSTRUCTION_OVERRIDE", "RULE_SYSTEM_PROMPT_LEAK"],
+      "heuristic_risk_score": 1.0,
+      "forwarded": false,
+      "prompt_length": 65,
+      "prompt_sha256": "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a"
+    }
+  ],
+  "total_count": 1,
+  "limit": 20,
+  "offset": 0
+}
+```
+
 ---
 
 ## Limitations and Security Considerations
@@ -216,8 +248,11 @@ Invoke-RestMethod -Uri http://127.0.0.1:8000/api/v1/proxy -Method POST -ContentT
    - **False Positives**: Legitimate prompts discussing prompt injection (e.g. security education or vulnerability disclosure) could match patterns if not carefully scoped.
 2. **ALLOW Does Not Guarantee Safety**:
    - An `ALLOW` response simply means no configured heuristic rule matched. It must never be interpreted as mathematical proof that a prompt is free of adversarial intent.
-3. **Audit Log Persistence**:
-   - Phase 1 audit events are retained in-memory for testing and demonstration. They are not persisted to disk, do not survive server restarts, and are not cryptographically tamper-proof.
+3. **Audit Log Persistence & Storage Retention**:
+   - Stage 6.3 stores structured security audit events durably in SQLite via `PROMPTSHIELD_AUDIT_DB_PATH` (default: `audit.db`).
+   - SQLite WAL mode and busy timeouts are configured for safe concurrent access.
+   - **Privacy Guarantee**: Raw prompt text, user search queries, credentials, and full model responses are never stored. Only sanitized identifiers, lengths, and SHA-256 digests are stored.
+   - **Retention Considerations**: Audit records grow monotonically in SQLite. In production deployments, configure an external log archiver or scheduled rotation policy for older records based on organizational compliance requirements.
 4. **Mock Downstream Isolation**:
    - The downstream service is a local synthetic stub that does not query actual LLM providers.
 

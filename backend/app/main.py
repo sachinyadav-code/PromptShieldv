@@ -8,7 +8,12 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.audit.logger import log_rag_security_event, log_security_event
+from app.audit import (
+    AuditStorageError,
+    get_audit_store,
+    log_rag_security_event,
+    log_security_event,
+)
 from app.auth import (
     HEADER_CONTENT_TYPE_OPTIONS,
     HEADER_FRAME_OPTIONS,
@@ -38,6 +43,8 @@ from app.rag import (
     retrieve_documents,
 )
 from app.schemas import (
+    AuditEventResponse,
+    AuditQueryResponse,
     DocumentInspectionSummary,
     HealthResponse,
     InspectResponse,
@@ -59,11 +66,19 @@ logger = logging.getLogger("promptshield.gateway")
 async def lifespan(app: FastAPI):
     """FastAPI application lifespan context manager.
 
-    Validates effective ML enforcement policy and limits configuration on startup before accepting requests.
+    Validates effective ML enforcement policy, limits configuration, and initializes
+    durable audit storage on startup before accepting requests.
     """
     logger.info("Initializing PromptShield Gateway...")
     mode = validate_startup_configuration()
     validate_limits_configuration()
+    try:
+        audit_store = get_audit_store()
+        audit_store.initialize_schema()
+    except Exception as e:
+        logger.error("Failed to initialize audit database on startup: %s", type(e).__name__)
+        raise RuntimeError("Audit storage initialization failed on startup.") from e
+
     logger.info("PromptShield Gateway initialized with ML enforcement mode: %s", mode)
     yield
     logger.info("Shutting down PromptShield Gateway...")
@@ -159,6 +174,69 @@ def list_rules() -> List[RuleInfo]:
         )
         for r in rules
     ]
+
+
+@app.get(
+    "/api/v1/audit/events",
+    response_model=AuditQueryResponse,
+    dependencies=[Depends(authenticate_request), Depends(enforce_rate_limit)],
+)
+def query_audit_events(
+    limit: int = 50,
+    offset: int = 0,
+    endpoint: Optional[str] = None,
+    decision: Optional[str] = None,
+    event_type: Optional[str] = None,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+) -> AuditQueryResponse:
+    """Query persisted security audit events with bounded pagination and filtering.
+
+    Requires API-key authentication and respects gateway rate-limiting.
+    """
+    if limit < 1 or limit > 100:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Query parameter 'limit' must be between 1 and 100.",
+        )
+    if offset < 0:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Query parameter 'offset' must be greater than or equal to 0.",
+        )
+
+    # Validate decision if provided
+    if decision is not None and decision.strip().upper() not in ("ALLOW", "BLOCK", "REVIEW"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid decision filter '{decision}'. Allowed values: ALLOW, BLOCK, REVIEW.",
+        )
+
+    try:
+        store = get_audit_store()
+        events_dicts, total_count = store.query_events(
+            limit=limit,
+            offset=offset,
+            endpoint=endpoint,
+            decision=decision,
+            event_type=event_type,
+            start_time=start_time,
+            end_time=end_time,
+        )
+        events_models = [AuditEventResponse(**e) for e in events_dicts]
+        return AuditQueryResponse(
+            events=events_models,
+            total_count=total_count,
+            limit=limit,
+            offset=offset,
+        )
+    except AuditStorageError as ase:
+        logger.error("Audit store query failed: %s", type(ase).__name__)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve audit events from persistent storage.",
+        ) from ase
+
 
 
 def _get_ml_assessment(prompt: str) -> MLAssessment:

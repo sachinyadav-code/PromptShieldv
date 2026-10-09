@@ -550,3 +550,42 @@ class RAGProxyResponse(BaseModel):
     def ml_detection(self) -> Optional[MLAssessment]:
         """Alias property for ml_assessment."""
         return self.ml_assessment
+
+
+class AuditEventResponse(BaseModel):
+    """Sanitized, structured security audit event returned by the query API."""
+
+    event_id: str = Field(..., description="Unique event identifier.")
+    request_id: str = Field(..., description="Gateway request identifier.")
+    client_request_id: Optional[str] = Field(default=None, description="Client-supplied correlation ID if present.")
+    timestamp: str = Field(..., description="ISO 8601 UTC timestamp when event was created.")
+    endpoint: str = Field(..., description="Gateway API route where event occurred.")
+    event_type: str = Field(..., description="Type of security event.")
+    decision: Optional[str] = Field(default=None, description="Policy decision (ALLOW, BLOCK, REVIEW).")
+    decision_source: Optional[str] = Field(default=None, description="Source of policy decision.")
+    matched_rule_ids: List[str] = Field(default_factory=list, description="Rule IDs matched during inspection.")
+    heuristic_risk_score: Optional[float] = Field(default=None, ge=0.0, le=1.0, description="Heuristic risk score.")
+    forwarded: Optional[bool] = Field(default=None, description="Whether request was forwarded downstream.")
+    prompt_length: Optional[int] = Field(default=None, description="Length of input prompt if applicable.")
+    prompt_sha256: Optional[str] = Field(default=None, description="SHA-256 fingerprint of input prompt.")
+    query_length: Optional[int] = Field(default=None, description="Length of RAG query if applicable.")
+    query_sha256: Optional[str] = Field(default=None, description="SHA-256 fingerprint of RAG query.")
+    retrieved_doc_ids: List[str] = Field(default_factory=list, description="Retrieved RAG document IDs.")
+    num_retrieved: Optional[int] = Field(default=None, description="Number of retrieved documents.")
+    is_complete: Optional[bool] = Field(default=None, description="Whether inspection completed fully.")
+    error_code: Optional[str] = Field(default=None, description="Error code if applicable.")
+    outcome: Optional[str] = Field(default=None, description="Inspection outcome.")
+    finding_count: Optional[int] = Field(default=None, description="Count of findings.")
+    output_status: Optional[str] = Field(default=None, description="Output inspection status.")
+    output_findings_count: Optional[int] = Field(default=None, description="Output finding count.")
+    output_matched_rule_ids: List[str] = Field(default_factory=list, description="Output matched rule IDs.")
+    output_error_code: Optional[str] = Field(default=None, description="Output error code if present.")
+
+
+class AuditQueryResponse(BaseModel):
+    """Paginated response containing audit events and paging metadata."""
+
+    events: List[AuditEventResponse] = Field(..., description="List of audit events for the current page.")
+    total_count: int = Field(..., ge=0, description="Total matching audit events across all pages.")
+    limit: int = Field(..., ge=1, le=100, description="Page size limit applied.")
+    offset: int = Field(..., ge=0, description="Offset index applied.")

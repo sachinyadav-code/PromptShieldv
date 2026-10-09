@@ -23,6 +23,12 @@ import re
 import threading
 from typing import Any, Dict, List, Optional
 
+from app.audit.storage import (
+    AuditStorageError,
+    SQLiteAuditStore,
+    get_audit_store,
+)
+
 logger = logging.getLogger("promptshield.audit")
 
 # Maximum capacity for in-memory FIFO audit ring buffer
@@ -126,10 +132,17 @@ def log_security_event(
             else None
         )
 
+    event["event_type"] = "security_inspection"
+
     with _audit_lock:
         if len(_audit_events) >= MAX_AUDIT_EVENTS:
             _audit_events.pop(0)
         _audit_events.append(copy.deepcopy(event))
+
+    # Persist to durable SQLite storage
+    store = get_audit_store()
+    store.save_event(event)
+
     logger.info(json.dumps(event))
     return event
 
@@ -216,10 +229,17 @@ def log_rag_security_event(
             else None
         )
 
+    event["event_type"] = "rag_inspection"
+
     with _audit_lock:
         if len(_audit_events) >= MAX_AUDIT_EVENTS:
             _audit_events.pop(0)
         _audit_events.append(copy.deepcopy(event))
+
+    # Persist to durable SQLite storage
+    store = get_audit_store()
+    store.save_event(event)
+
     logger.info(json.dumps(event))
     return event
 
@@ -274,6 +294,11 @@ def log_output_security_event(
         if len(_audit_events) >= MAX_AUDIT_EVENTS:
             _audit_events.pop(0)
         _audit_events.append(copy.deepcopy(event))
+
+    # Persist to durable SQLite storage
+    store = get_audit_store()
+    store.save_event(event)
+
     logger.info(json.dumps(event))
     return event
 
@@ -285,7 +310,9 @@ def get_audit_events() -> List[Dict[str, Any]]:
 
 
 def clear_audit_events() -> None:
-    """Reset the in-memory audit event log."""
+    """Reset the audit event log (both in-memory buffer and persistent store)."""
     global _audit_events
     with _audit_lock:
         _audit_events.clear()
+    store = get_audit_store()
+    store.clear()
