@@ -4,10 +4,11 @@ Provides single-pass bounded decoding for detection scratchpads, supporting:
 1. URL percent encoding (e.g. %2D, %3A, %2F)
 2. Textual hexadecimal escape sequences (e.g. \x73\x6b)
 3. Textual Unicode escape sequences (e.g. \u0073\u006b, \U00000073\U0000006b)
+   with RFC 8259 compliant bounded UTF-16 surrogate-pair recombination (\uD83D\uDE00 -> 😀)
 
 Enforces strict input length bounds, decoded buffer bounds, and fail-closed handling
 for malformed encoding sequences (such as invalid UTF-8 byte sequences, embedded null bytes,
-or invalid Unicode code points like surrogates and out-of-range scalars),
+unpaired surrogates, 8-digit surrogates, or out-of-range scalars),
 while preserving ordinary text containing literal percent signs, incomplete markers,
 and unrelated backslashes.
 
@@ -68,14 +69,16 @@ def decode_for_detection(
     Decoding rules:
     - Decodes URL percent-encoded bytes (`%HH`), textual hex escapes (`\xHH`),
       and textual Unicode escapes (`\uXXXX`, `\UXXXXXXXX`).
+    - Recombines valid RFC 8259 UTF-16 surrogate pairs (`\uD800..\uDBFF` immediately
+      followed by `\uDC00..\uDFFF`) into the corresponding 21-bit Unicode scalar.
     - Performs a single bounded pass; double-encoded inputs (e.g. `%252D`, `\x252D`,
       `\u005c\u00750073`) are NOT recursively decoded.
     - Never executes decoded text or treats it as code.
     - Preserves literal `%`, incomplete markers (`%`, `%1`, `%zz`), and unrelated
       backslashes (`\n`, `\t`, `\path`, `\x`, `\u`, `\u1`, `\U`, `\U0073`).
     - Rejects malformed candidate escape sequences (invalid UTF-8 bytes, truncated
-      multibyte sequences, embedded null bytes, surrogate code points, out-of-range scalars)
-      by raising OutputDecodingError.
+      multibyte sequences, embedded null bytes, unpaired surrogates, 8-digit surrogates,
+      out-of-range scalars) by raising OutputDecodingError.
     - Enforces input-length and decoded-buffer boundaries.
 
     Args:
@@ -151,20 +154,37 @@ def decode_for_detection(
                 raw_bytes.append(byte_val)
                 i += 4
             elif block[i : i + 2] == "\\u":
-                _flush_byte_run()
                 code_point = int(block[i + 2 : i + 6], 16)
                 if code_point == 0:
                     raise OutputDecodingError(
                         "Null code point (\\u0000) in Unicode escape candidate is not permitted."
                     )
-                if 0xD800 <= code_point <= 0xDFFF:
+                if 0xD800 <= code_point <= 0xDBFF:
+                    # High surrogate: must be immediately followed by a low surrogate \uXXXX
+                    if i + 12 <= block_len and block[i + 6 : i + 8] == "\\u":
+                        low_point = int(block[i + 8 : i + 12], 16)
+                        if 0xDC00 <= low_point <= 0xDFFF:
+                            _flush_byte_run()
+                            scalar = (
+                                0x10000
+                                + ((code_point - 0xD800) << 10)
+                                + (low_point - 0xDC00)
+                            )
+                            result_chars.append(chr(scalar))
+                            i += 12
+                            continue
                     raise OutputDecodingError(
-                        f"Surrogate code point (U+{code_point:04X}) in Unicode escape candidate is not permitted."
+                        f"Unpaired high surrogate (U+{code_point:04X}) in Unicode escape candidate is not permitted."
+                    )
+                if 0xDC00 <= code_point <= 0xDFFF:
+                    raise OutputDecodingError(
+                        f"Unpaired low surrogate (U+{code_point:04X}) in Unicode escape candidate is not permitted."
                     )
                 if code_point > 0x10FFFF:
                     raise OutputDecodingError(
                         f"Code point out of range (U+{code_point:X} > U+10FFFF) in Unicode escape candidate is not permitted."
                     )
+                _flush_byte_run()
                 result_chars.append(chr(code_point))
                 i += 6
             elif block[i : i + 2] == "\\U":

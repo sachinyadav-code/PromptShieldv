@@ -179,6 +179,90 @@ class TestBoundedDecoderUnit:
         with pytest.raises(OutputDecodingError):
             decode_for_detection(r"Token: \U0000DFFF")
 
+    def test_valid_surrogate_pairs_decode_to_unicode_scalars(self):
+        """Stage 5.6: Valid UTF-16 surrogate pairs decode to 21-bit Unicode scalars."""
+        assert decode_for_detection(r"\uD83D\uDE00") == "\U0001F600"
+        assert decode_for_detection(r"\uD83C\uDF89") == "\U0001F389"
+        assert (
+            decode_for_detection(r"\uD83D\uDE00\uD83C\uDF89")
+            == "\U0001F600\U0001F389"
+        )
+
+    def test_surrogate_pairs_mixed_case_hexadecimal_digits(self):
+        """Stage 5.6: Surrogate pairs with uppercase, lowercase, and mixed-case hex digits decode."""
+        assert decode_for_detection(r"\ud83d\ude00") == "\U0001F600"
+        assert decode_for_detection(r"\uD83d\uDe00") == "\U0001F600"
+        assert decode_for_detection(r"\uD83C\udf89") == "\U0001F389"
+
+    def test_unpaired_high_surrogate_fails_closed(self):
+        """Stage 5.6: Unpaired high surrogates fail closed in all contexts."""
+        # At end of input
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection(r"Prefix \uD83D")
+        # Followed by another high surrogate
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection(r"\uD83D\uD83D")
+        # Followed by ordinary non-surrogate Unicode escape
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection(r"\uD83D\u0073")
+        # Followed by ordinary text
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection(r"\uD83D_test")
+
+    def test_unpaired_low_surrogate_fails_closed(self):
+        """Stage 5.6: Isolated low surrogates fail closed."""
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection(r"Prefix \uDE00")
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection(r"\u0073\uDE00")
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection(r"test\uDE00")
+
+    def test_surrogates_separated_by_text_whitespace_or_byte_escape_fail_closed(self):
+        """Stage 5.6: Surrogates separated by text, whitespace, or byte escapes fail closed."""
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection(r"\uD83D \uDE00")
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection(r"\uD83Dfoo\uDE00")
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection(r"\uD83D%20\uDE00")
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection(r"\uD83D\x20\uDE00")
+
+    def test_valid_byte_run_adjacent_to_surrogate_pair(self):
+        """Stage 5.6: Valid byte runs adjacent to a surrogate pair decode cleanly."""
+        assert decode_for_detection(r"%C3%A9\uD83D\uDE00") == "é\U0001F600"
+        assert decode_for_detection(r"\xc3\xa9\uD83D\uDE00") == "é\U0001F600"
+        assert decode_for_detection(r"\uD83D\uDE00%C3%A9") == "\U0001F600é"
+        assert decode_for_detection(r"%C3%A9\uD83D\uDE00%C3%A9") == "é\U0001F600é"
+
+    def test_malformed_byte_runs_adjacent_to_surrogate_pair_fail_closed(self):
+        """Stage 5.6: Malformed byte runs adjacent to a surrogate pair fail closed."""
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection(r"%E2\uD83D\uDE00")
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection(r"\xe2\uD83D\uDE00")
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection(r"\uD83D\uDE00%E2")
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection(r"\uD83D\uDE00\xe2")
+
+    def test_eight_digit_surrogates_remain_strictly_rejected(self):
+        """Stage 5.6: Eight-digit \\UXXXXXXXX escapes never permit surrogate code points."""
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection(r"\U0000D83D")
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection(r"\U0000DE00")
+        with pytest.raises(OutputDecodingError):
+            decode_for_detection(r"\U0000D83D\U0000DE00")
+
+    def test_single_pass_behavior_with_surrogates(self):
+        """Stage 5.6: Single-pass decoding preserves produced escapes without recursion."""
+        assert (
+            decode_for_detection(r"\u005c\u00750061\uD83D\uDE00")
+            == r"\u0061" + "\U0001F600"
+        )
+
     def test_out_of_range_code_point_fails_closed(self):
         with pytest.raises(OutputDecodingError):
             decode_for_detection(r"Token: \U00110000")
@@ -715,3 +799,60 @@ class TestEncodedCredentialScanningAndRedaction:
         assert "sk-abcdef1234567890abcdef1234567890" not in serialized
         assert "abcdef1234567890" not in serialized
         clear_audit_events()
+
+    def test_json_response_with_surrogate_pair_allowed_and_audited_clean(self):
+        """Stage 5.6: Valid JSON response containing an escaped surrogate pair is allowed and clean."""
+        json_msg = r'{"status": "ok", "emoji": "\uD83D\uDE00", "count": 42}'
+        mock_resp = MockDownstreamResponse(
+            simulated=True,
+            provider="mock-llm-service",
+            message=json_msg,
+            received_prompt_length=15,
+        )
+
+        res = enforce_output_security(mock_resp)
+        assert res.effective_decision == "ALLOW"
+        assert res.audit_outcome == "clean"
+        assert res.downstream_response is not None
+        assert res.downstream_response.message == json_msg
+        assert res.finding_count == 0
+
+    def test_json_response_with_surrogate_pair_and_escaped_credential_redacted(self):
+        """Stage 5.6: Surrogate pair alongside an escaped credential triggers whole-response redaction."""
+        json_msg = (
+            r'{"emoji": "\uD83D\uDE00", '
+            r'"api_key": "\u0073\u006b-abcdef1234567890abcdef1234567890"}'
+        )
+        mock_resp = MockDownstreamResponse(
+            simulated=True,
+            provider="mock-llm-service",
+            message=json_msg,
+            received_prompt_length=20,
+        )
+
+        res = enforce_output_security(mock_resp)
+        assert res.effective_decision == "ALLOW"
+        assert res.audit_outcome == "redacted"
+        assert res.downstream_response is not None
+        assert res.downstream_response.message == "[REDACTED]"
+        assert res.finding_count == 1
+        assert DLP_RULE_OPENAI_API_KEY in res.matched_rule_ids
+
+    def test_json_response_with_surrogate_pair_and_critical_secret_blocked(self):
+        """Stage 5.6: Surrogate pair alongside an escaped critical credential blocks egress."""
+        json_msg = (
+            r'{"emoji": "\uD83D\uDE00", '
+            r'"db": "postgres\u003a\u002f\u002fadmin\u003asecret123\u0040localhost\u003a5432\u002fdb"}'
+        )
+        mock_resp = MockDownstreamResponse(
+            simulated=True,
+            provider="mock-llm-service",
+            message=json_msg,
+            received_prompt_length=20,
+        )
+
+        res = enforce_output_security(mock_resp)
+        assert res.effective_decision == "BLOCK"
+        assert res.audit_outcome == "blocked"
+        assert res.downstream_response is None
+        assert DLP_RULE_DATABASE_URI_CREDENTIAL in res.matched_rule_ids
