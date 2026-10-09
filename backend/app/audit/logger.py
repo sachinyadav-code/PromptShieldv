@@ -70,6 +70,10 @@ def log_security_event(
     prompt: str,
     client_request_id: Optional[str] = None,
     decision_source: Optional[str] = None,
+    output_status: Optional[str] = None,
+    output_findings_count: Optional[int] = None,
+    output_matched_rule_ids: Optional[List[str]] = None,
+    output_error_code: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Record a structured security audit event.
 
@@ -109,6 +113,19 @@ def log_security_event(
         "prompt_sha256": _compute_prompt_hash(prompt),
     }
 
+    if output_status is not None:
+        event["output_status"] = sanitize_audit_id(output_status, max_length=32, fallback="UNKNOWN")
+        event["output_findings_count"] = max(0, int(output_findings_count or 0))
+        event["output_matched_rule_ids"] = [
+            sanitize_audit_id(r, max_length=64, fallback="unknown_rule")
+            for r in (output_matched_rule_ids or [])
+        ][:100]
+        event["output_error_code"] = (
+            sanitize_audit_id(output_error_code, max_length=64, fallback="unknown_error")
+            if output_error_code is not None
+            else None
+        )
+
     with _audit_lock:
         if len(_audit_events) >= MAX_AUDIT_EVENTS:
             _audit_events.pop(0)
@@ -131,6 +148,10 @@ def log_rag_security_event(
     client_request_id: Optional[str] = None,
     decision_source: Optional[str] = None,
     error_code: Optional[str] = None,
+    output_status: Optional[str] = None,
+    output_findings_count: Optional[int] = None,
+    output_matched_rule_ids: Optional[List[str]] = None,
+    output_error_code: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Record a structured security audit event for RAG requests.
 
@@ -179,6 +200,73 @@ def log_rag_security_event(
         "retrieved_doc_ids": sanitized_doc_ids,
         "num_retrieved": max(0, min(int(num_retrieved), 1000)),
         "is_complete": bool(is_complete),
+        "error_code": sanitized_error_code,
+    }
+
+    if output_status is not None:
+        event["output_status"] = sanitize_audit_id(output_status, max_length=32, fallback="UNKNOWN")
+        event["output_findings_count"] = max(0, int(output_findings_count or 0))
+        event["output_matched_rule_ids"] = [
+            sanitize_audit_id(r, max_length=64, fallback="unknown_rule")
+            for r in (output_matched_rule_ids or [])
+        ][:100]
+        event["output_error_code"] = (
+            sanitize_audit_id(output_error_code, max_length=64, fallback="unknown_error")
+            if output_error_code is not None
+            else None
+        )
+
+    with _audit_lock:
+        if len(_audit_events) >= MAX_AUDIT_EVENTS:
+            _audit_events.pop(0)
+        _audit_events.append(copy.deepcopy(event))
+    logger.info(json.dumps(event))
+    return event
+
+
+def log_output_security_event(
+    request_id: str,
+    endpoint: str,
+    outcome: str,
+    matched_rule_ids: Optional[List[str]] = None,
+    finding_count: int = 0,
+    client_request_id: Optional[str] = None,
+    error_code: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Record a dedicated structured security audit event for output DLP inspection.
+
+    IMPORTANT PRIVACY INVARIANTS:
+    Never logs raw downstream responses, matched secret values, redacted excerpts,
+    or credentials. Logs only sanitized identifiers and aggregate metrics.
+    """
+    sanitized_req_id = sanitize_audit_id(request_id, max_length=128, fallback="unknown_req")
+    sanitized_client_req_id = (
+        sanitize_audit_id(client_request_id, max_length=128, fallback="unknown_client")
+        if client_request_id is not None
+        else None
+    )
+    sanitized_endpoint = CONTROL_CHARS_PATTERN.sub("", str(endpoint))[:64] or "/unknown"
+    sanitized_outcome = sanitize_audit_id(outcome, max_length=32, fallback="UNKNOWN")
+    sanitized_error_code = (
+        sanitize_audit_id(error_code, max_length=64, fallback="unknown_error")
+        if error_code is not None
+        else None
+    )
+    sanitized_rules = [
+        sanitize_audit_id(r, max_length=64, fallback="unknown_rule")
+        for r in (matched_rule_ids or [])
+    ][:100]
+
+    event = {
+        "event_id": f"{sanitized_req_id}_output",
+        "event_type": "output_security",
+        "request_id": sanitized_req_id,
+        "client_request_id": sanitized_client_req_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "endpoint": sanitized_endpoint,
+        "outcome": sanitized_outcome,
+        "matched_rule_ids": sanitized_rules,
+        "finding_count": max(0, int(finding_count)),
         "error_code": sanitized_error_code,
     }
 

@@ -230,7 +230,21 @@ class InspectResponse(BaseModel):
 
 
 class MockDownstreamResponse(BaseModel):
-    """Harmless simulated downstream LLM service response."""
+    """Harmless simulated downstream LLM service response.
+
+    TRUST BOUNDARY AND METADATA ARCHITECTURE NOTICE:
+    - `message`: Untrusted client-visible egress text that carries simulated
+      or forwarded LLM content. This field crosses the output security trust boundary
+      and is actively inspected by DLP rules (`enforce_output_security`) and
+      redacted or blocked prior to client return.
+    - `provider`: Trusted internal static gateway metadata (defaults to
+      'mock-downstream-service'). It is generated server-side by the gateway mock
+      infrastructure rather than by untrusted downstream actors or caller-controlled
+      request headers. If `provider` or additional response metadata is ever expanded
+      to accept dynamic external routing parameters, caller headers, or arbitrary
+      upstream metadata, those attributes must also be brought into the security
+      inspection and validation boundary.
+    """
 
     simulated: bool = Field(default=True, description="Flag indicating simulated response.")
     provider: str = Field(default="mock-downstream-service")

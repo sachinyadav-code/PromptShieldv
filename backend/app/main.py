@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from app.audit.logger import log_rag_security_event, log_security_event
 from app.detection.ml_classifier import get_classifier
 from app.detection.rules import get_configured_rules, scan_prompt
+from app.output import enforce_output_security
 from app.policies.engine import (
     evaluate_policy,
     evaluate_rag_policy,
@@ -165,6 +166,7 @@ def proxy_prompt(payload: PromptRequest) -> ProxyResponse:
     """Inspect prompt and forward to mock downstream service ONLY if allowed.
 
     If decision is BLOCK, the mock service is never called.
+    Inspects downstream output for sensitive data leakage before returning to client.
     """
     server_request_id = str(uuid.uuid4())
     matched_rules = scan_prompt(payload.prompt)
@@ -175,30 +177,104 @@ def proxy_prompt(payload: PromptRequest) -> ProxyResponse:
     forwarded = False
 
     if decision.decision == "ALLOW":
-        downstream_result = forward_to_mock_downstream(payload.prompt)
-        forwarded = True
+        try:
+            downstream_result = forward_to_mock_downstream(payload.prompt)
+            forwarded = True
+        except Exception as exc:
+            logger.error("Downstream service call failed on /api/v1/proxy: %s", type(exc).__name__)
+            log_security_event(
+                request_id=server_request_id,
+                endpoint="/api/v1/proxy",
+                decision="BLOCK",
+                matched_rule_ids=decision.matched_rule_ids,
+                risk_score=1.0,
+                forwarded=False,
+                prompt=payload.prompt,
+                client_request_id=payload.request_id,
+                decision_source="deterministic_rule",
+                output_status="scan_error",
+                output_findings_count=0,
+                output_matched_rule_ids=[],
+                output_error_code="DOWNSTREAM_CALL_FAILED",
+            )
+            return ProxyResponse(
+                decision="BLOCK",
+                request_id=server_request_id,
+                client_request_id=payload.request_id,
+                matched_rules=decision.matched_rule_ids,
+                explanation="Output blocked by security policy: Downstream response could not be verified by security inspection.",
+                downstream_response=None,
+                ml_assessment=ml_assessment,
+                decision_source="deterministic_rule",
+            )
+
+    # 1. If request was blocked at input, audit and return immediately
+    if not forwarded:
+        log_security_event(
+            request_id=server_request_id,
+            endpoint="/api/v1/proxy",
+            decision=decision.decision,
+            matched_rule_ids=decision.matched_rule_ids,
+            risk_score=decision.risk_score,
+            forwarded=False,
+            prompt=payload.prompt,
+            client_request_id=payload.request_id,
+            decision_source=decision.decision_source,
+        )
+        return ProxyResponse(
+            decision=decision.decision,
+            request_id=server_request_id,
+            client_request_id=payload.request_id,
+            matched_rules=decision.matched_rule_ids,
+            explanation=decision.explanation,
+            downstream_response=None,
+            ml_assessment=ml_assessment,
+            decision_source=decision.decision_source,
+        )
+
+    # 2. Inspect downstream output for DLP violations
+    output_enforcement = enforce_output_security(downstream_result)
+
+    if output_enforcement.effective_decision == "BLOCK":
+        effective_decision = "BLOCK"
+        effective_downstream = None
+        effective_risk = output_enforcement.risk_score
+        effective_explanation = output_enforcement.explanation or "Output blocked by security policy."
+        effective_decision_source = "deterministic_rule"
+    else:
+        effective_decision = "ALLOW"
+        effective_downstream = output_enforcement.downstream_response
+        effective_risk = decision.risk_score
+        effective_explanation = decision.explanation
+        effective_decision_source = decision.decision_source
+
+    all_matched_rules = list(dict.fromkeys(decision.matched_rule_ids + output_enforcement.matched_rule_ids))
 
     log_security_event(
         request_id=server_request_id,
         endpoint="/api/v1/proxy",
-        decision=decision.decision,
-        matched_rule_ids=decision.matched_rule_ids,
-        risk_score=decision.risk_score,
-        forwarded=forwarded,
+        decision=effective_decision,
+        matched_rule_ids=all_matched_rules,
+        risk_score=effective_risk,
+        forwarded=True,
         prompt=payload.prompt,
         client_request_id=payload.request_id,
-        decision_source=decision.decision_source,
+        decision_source=effective_decision_source,
+        output_status=output_enforcement.audit_outcome,
+        output_findings_count=output_enforcement.finding_count,
+        output_matched_rule_ids=output_enforcement.matched_rule_ids,
+        output_error_code=output_enforcement.error_code,
     )
 
     return ProxyResponse(
-        decision=decision.decision,
+        decision=effective_decision,
         request_id=server_request_id,
         client_request_id=payload.request_id,
-        matched_rules=decision.matched_rule_ids,
-        explanation=decision.explanation,
-        downstream_response=downstream_result,
+        matched_rules=all_matched_rules,
+        explanation=effective_explanation,
+        downstream_response=effective_downstream,
         ml_assessment=ml_assessment,
-        decision_source=decision.decision_source,
+        decision_source=effective_decision_source,
     )
 
 
@@ -528,33 +604,7 @@ def proxy_rag(payload: RAGRequest) -> RAGProxyResponse:
             ml_assessment=None,
         )
 
-    # 6. Forward to mock downstream ONLY if final decision is ALLOW
-    downstream_result = None
-    forwarded = False
-
-    if policy_decision.decision == "ALLOW":
-        rag_prompt = assemble_rag_downstream_prompt(payload.query, retrieved_docs)
-        downstream_result = forward_to_mock_downstream(rag_prompt)
-        forwarded = True
-
-    # 7. Structured audit logging
-    retrieved_doc_ids = [d.doc_id for d in retrieved_docs]
-    log_rag_security_event(
-        request_id=server_request_id,
-        endpoint="/api/v1/rag/proxy",
-        decision=policy_decision.decision,
-        matched_rule_ids=policy_decision.matched_rule_ids,
-        risk_score=policy_decision.risk_score,
-        forwarded=forwarded,
-        query=payload.query,
-        retrieved_doc_ids=retrieved_doc_ids,
-        num_retrieved=len(retrieved_docs),
-        is_complete=report.is_complete,
-        client_request_id=payload.request_id,
-        decision_source=policy_decision.decision_source,
-    )
-
-    # 8. Build structured response
+    # 6. Build structured retrieval and inspection summaries
     retrieved_summaries = [
         RetrievedDocumentSummary(
             doc_id=r.doc_id,
@@ -591,21 +641,130 @@ def proxy_rag(payload: RAGRequest) -> RAGProxyResponse:
         for f in report.all_findings
     ]
 
+    # 7. Forward to mock downstream ONLY if final decision is ALLOW
+    downstream_result = None
+    forwarded = False
+    output_enforcement = None
+
+    if policy_decision.decision == "ALLOW":
+        rag_prompt = assemble_rag_downstream_prompt(payload.query, retrieved_docs)
+        try:
+            downstream_result = forward_to_mock_downstream(rag_prompt)
+            forwarded = True
+        except Exception as exc:
+            logger.error("Downstream service call failed on /api/v1/rag/proxy: %s", type(exc).__name__)
+            retrieved_doc_ids = [d.doc_id for d in retrieved_docs]
+            log_rag_security_event(
+                request_id=server_request_id,
+                endpoint="/api/v1/rag/proxy",
+                decision="BLOCK",
+                matched_rule_ids=policy_decision.matched_rule_ids,
+                risk_score=1.0,
+                forwarded=False,
+                query=payload.query,
+                retrieved_doc_ids=retrieved_doc_ids,
+                num_retrieved=len(retrieved_docs),
+                is_complete=False,
+                client_request_id=payload.request_id,
+                decision_source="deterministic_rule",
+                error_code="DOWNSTREAM_CALL_FAILED",
+                output_status="scan_error",
+                output_findings_count=0,
+                output_matched_rule_ids=[],
+                output_error_code="DOWNSTREAM_CALL_FAILED",
+            )
+            return RAGProxyResponse(
+                decision="BLOCK",
+                decision_source="deterministic_rule",
+                risk_score=1.0,
+                request_id=server_request_id,
+                client_request_id=payload.request_id,
+                is_complete=False,
+                forwarded=False,
+                direct_query_assessment=report.query_result.assessment,
+                combined_context_assessment=report.combined_context_result.assessment,
+                matched_rules=policy_decision.matched_rule_ids,
+                explanation="Output blocked by security policy: Downstream response could not be verified by security inspection.",
+                retrieved_documents=retrieved_summaries,
+                document_assessments=doc_assessments,
+                downstream_response=None,
+                findings=findings_summaries,
+                ml_assessment=ml_assessment,
+            )
+
+    # 8. Inspect downstream output for DLP violations
+    if forwarded:
+        output_enforcement = enforce_output_security(downstream_result)
+
+    if output_enforcement is not None:
+        if output_enforcement.effective_decision == "BLOCK":
+            effective_decision = "BLOCK"
+            effective_downstream = None
+            effective_risk = output_enforcement.risk_score
+            effective_explanation = output_enforcement.explanation or "Output blocked by security policy."
+            effective_decision_source = "deterministic_rule"
+            is_complete = report.is_complete and output_enforcement.is_complete
+        else:
+            effective_decision = "ALLOW"
+            effective_downstream = output_enforcement.downstream_response
+            effective_risk = policy_decision.risk_score
+            effective_explanation = policy_decision.explanation
+            effective_decision_source = policy_decision.decision_source
+            is_complete = report.is_complete
+        all_matched_rules = list(dict.fromkeys(policy_decision.matched_rule_ids + output_enforcement.matched_rule_ids))
+        audit_output_status = output_enforcement.audit_outcome
+        audit_output_findings_count = output_enforcement.finding_count
+        audit_output_matched_rule_ids = output_enforcement.matched_rule_ids
+        audit_output_error_code = output_enforcement.error_code
+    else:
+        effective_decision = policy_decision.decision
+        effective_downstream = None
+        effective_risk = policy_decision.risk_score
+        effective_explanation = policy_decision.explanation
+        effective_decision_source = policy_decision.decision_source
+        is_complete = report.is_complete
+        all_matched_rules = policy_decision.matched_rule_ids
+        audit_output_status = None
+        audit_output_findings_count = None
+        audit_output_matched_rule_ids = None
+        audit_output_error_code = None
+
+    # 9. Structured audit logging
+    retrieved_doc_ids = [d.doc_id for d in retrieved_docs]
+    log_rag_security_event(
+        request_id=server_request_id,
+        endpoint="/api/v1/rag/proxy",
+        decision=effective_decision,
+        matched_rule_ids=all_matched_rules,
+        risk_score=effective_risk,
+        forwarded=forwarded,
+        query=payload.query,
+        retrieved_doc_ids=retrieved_doc_ids,
+        num_retrieved=len(retrieved_docs),
+        is_complete=is_complete,
+        client_request_id=payload.request_id,
+        decision_source=effective_decision_source,
+        output_status=audit_output_status,
+        output_findings_count=audit_output_findings_count,
+        output_matched_rule_ids=audit_output_matched_rule_ids,
+        output_error_code=audit_output_error_code,
+    )
+
     return RAGProxyResponse(
-        decision=policy_decision.decision,
-        decision_source=policy_decision.decision_source,
-        risk_score=policy_decision.risk_score,
+        decision=effective_decision,
+        decision_source=effective_decision_source,
+        risk_score=effective_risk,
         request_id=server_request_id,
         client_request_id=payload.request_id,
-        is_complete=report.is_complete,
+        is_complete=is_complete,
         forwarded=forwarded,
         direct_query_assessment=report.query_result.assessment,
         combined_context_assessment=report.combined_context_result.assessment,
-        matched_rules=policy_decision.matched_rule_ids,
-        explanation=policy_decision.explanation,
+        matched_rules=all_matched_rules,
+        explanation=effective_explanation,
         retrieved_documents=retrieved_summaries,
         document_assessments=doc_assessments,
-        downstream_response=downstream_result,
+        downstream_response=effective_downstream,
         findings=findings_summaries,
         ml_assessment=ml_assessment,
     )

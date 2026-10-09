@@ -10,6 +10,7 @@ from app.audit.logger import (
     MAX_AUDIT_EVENTS,
     clear_audit_events,
     get_audit_events,
+    log_output_security_event,
     log_rag_security_event,
     log_security_event,
     sanitize_audit_id,
@@ -516,3 +517,334 @@ def test_rag_pipeline_failure_handling_and_no_downstream_leakage(client, monkeyp
     assert event_inspect["error_code"] == "INSPECTION_FAILED"
     assert event_inspect["forwarded"] is False
     assert sensitive_token not in str(event_inspect)
+
+
+def test_output_error_code_sanitization_and_bounds_across_audit_paths():
+    """Verify that output error codes are sanitized against CR/LF, null/control characters,
+    and truncated strictly to the 64-character limit across standard, RAG, and dedicated audit paths.
+    """
+    clear_audit_events()
+
+    # 1. CR/LF injection in error code (CWE-117 log injection prevention)
+    crlf_code = "ERR\r\n_OUTPUT\n_FORGED\r"
+    ev_std = log_security_event(
+        request_id="req-crlf-std",
+        endpoint="/api/v1/proxy",
+        decision="BLOCK",
+        matched_rule_ids=[],
+        risk_score=0.9,
+        forwarded=False,
+        prompt="sample prompt",
+        output_status="BLOCKED",
+        output_error_code=crlf_code,
+    )
+    # Control characters stripped, allowed chars preserved
+    assert ev_std["output_error_code"] == "ERR_OUTPUT_FORGED"
+    assert "\r" not in ev_std["output_error_code"]
+    assert "\n" not in ev_std["output_error_code"]
+    assert "\r" not in json.dumps(ev_std)
+    assert "\n" not in json.dumps(ev_std)
+
+    # 2. Null and control characters in RAG audit path
+    ctrl_code = "ERR\x00_NULL\x1b_ESCAPE\x7f_DEL"
+    ev_rag = log_rag_security_event(
+        request_id="req-ctrl-rag",
+        endpoint="/api/v1/rag/proxy",
+        decision="BLOCK",
+        matched_rule_ids=[],
+        risk_score=0.95,
+        forwarded=False,
+        query="sample query",
+        retrieved_doc_ids=[],
+        num_retrieved=0,
+        is_complete=True,
+        output_status="BLOCKED",
+        output_error_code=ctrl_code,
+    )
+    assert ev_rag["output_error_code"] == "ERR_NULL_ESCAPE_DEL"
+    assert "\x00" not in ev_rag["output_error_code"]
+    assert "\x1b" not in ev_rag["output_error_code"]
+    assert "\x7f" not in ev_rag["output_error_code"]
+    assert "\x00" not in json.dumps(ev_rag)
+
+    # 3. String exceeding 64-character limit (must be truncated strictly to 64 chars)
+    oversized_code = "OUTPUT_SECURITY_CRITICAL_PAYMENT_CARD_FINDING_EXCEEDED_MAX_LENGTH_OVERFLOW_12345"
+    assert len(oversized_code) > 64
+    ev_out = log_output_security_event(
+        request_id="req-long-out",
+        endpoint="/api/v1/proxy",
+        outcome="BLOCKED",
+        matched_rule_ids=["DLP_RULE_PAYMENT_CARD"],
+        finding_count=1,
+        error_code=oversized_code,
+    )
+    assert len(ev_out["error_code"]) == 64
+    assert ev_out["error_code"] == oversized_code[:64]
+
+    # Verify length capping in standard and RAG logging paths as well
+    ev_std_long = log_security_event(
+        request_id="req-long-std",
+        endpoint="/api/v1/proxy",
+        decision="BLOCK",
+        matched_rule_ids=[],
+        risk_score=0.8,
+        forwarded=False,
+        prompt="p",
+        output_status="BLOCKED",
+        output_error_code=oversized_code,
+    )
+    assert len(ev_std_long["output_error_code"]) == 64
+    assert ev_std_long["output_error_code"] == oversized_code[:64]
+
+    ev_rag_long = log_rag_security_event(
+        request_id="req-long-rag",
+        endpoint="/api/v1/rag/proxy",
+        decision="BLOCK",
+        matched_rule_ids=[],
+        risk_score=0.8,
+        forwarded=False,
+        query="q",
+        retrieved_doc_ids=[],
+        num_retrieved=0,
+        is_complete=True,
+        output_status="BLOCKED",
+        output_error_code=oversized_code,
+    )
+    assert len(ev_rag_long["output_error_code"]) == 64
+    assert ev_rag_long["output_error_code"] == oversized_code[:64]
+
+    # 4. Control-only and empty error codes fall back to safe default
+    ev_ctrl_only = log_security_event(
+        request_id="req-fallback-ctrl",
+        endpoint="/api/v1/proxy",
+        decision="BLOCK",
+        matched_rule_ids=[],
+        risk_score=0.5,
+        forwarded=False,
+        prompt="p",
+        output_status="BLOCKED",
+        output_error_code="\x00\r\n\t",
+    )
+    assert ev_ctrl_only["output_error_code"] == "unknown_error"
+
+    clear_audit_events()
+
+
+def test_output_matched_rule_ids_sanitization_and_bounds_across_audit_paths():
+    """Verify that output matched rule IDs are capped at 100 entries, sanitized against
+    control characters, bounded to 64 characters per ID, and handle malformed values safely.
+    """
+    clear_audit_events()
+
+    # 1. More than 100 entries: list must be capped strictly at 100 entries
+    oversized_rule_list = [f"DLP_RULE_{i:03d}" for i in range(130)]
+    ev_std = log_security_event(
+        request_id="req-rules-cap-std",
+        endpoint="/api/v1/proxy",
+        decision="ALLOW",
+        matched_rule_ids=[],
+        risk_score=0.1,
+        forwarded=True,
+        prompt="prompt",
+        output_status="FINDINGS_DETECTED",
+        output_findings_count=130,
+        output_matched_rule_ids=oversized_rule_list,
+    )
+    assert len(ev_std["output_matched_rule_ids"]) == 100
+    assert ev_std["output_matched_rule_ids"][0] == "DLP_RULE_000"
+    assert ev_std["output_matched_rule_ids"][-1] == "DLP_RULE_099"
+
+    ev_rag = log_rag_security_event(
+        request_id="req-rules-cap-rag",
+        endpoint="/api/v1/rag/proxy",
+        decision="ALLOW",
+        matched_rule_ids=[],
+        risk_score=0.1,
+        forwarded=True,
+        query="query",
+        retrieved_doc_ids=[],
+        num_retrieved=0,
+        is_complete=True,
+        output_status="FINDINGS_DETECTED",
+        output_findings_count=130,
+        output_matched_rule_ids=oversized_rule_list,
+    )
+    assert len(ev_rag["output_matched_rule_ids"]) == 100
+
+    ev_out = log_output_security_event(
+        request_id="req-rules-cap-out",
+        endpoint="/api/v1/proxy",
+        outcome="ALLOWED",
+        matched_rule_ids=oversized_rule_list,
+        finding_count=130,
+    )
+    assert len(ev_out["matched_rule_ids"]) == 100
+
+    # 2. Rule IDs containing control characters and newlines
+    dirty_rules = [
+        "RULE\r\n_INJECTION",
+        "RULE\x00_NULLBYTE",
+        "RULE\t_TAB",
+        "\r\n\x00",  # Entirely control chars -> fallback
+    ]
+    ev_clean = log_output_security_event(
+        request_id="req-rules-dirty",
+        endpoint="/api/v1/proxy",
+        outcome="ALLOWED",
+        matched_rule_ids=dirty_rules,
+    )
+    assert ev_clean["matched_rule_ids"][0] == "RULE_INJECTION"
+    assert ev_clean["matched_rule_ids"][1] == "RULE_NULLBYTE"
+    assert ev_clean["matched_rule_ids"][2] == "RULE_TAB"
+    assert ev_clean["matched_rule_ids"][3] == "unknown_rule"
+    serialized = json.dumps(ev_clean)
+    assert "\r" not in serialized
+    assert "\n" not in serialized
+    assert "\x00" not in serialized
+
+    # 3. Rule IDs longer than the documented 64-character limit
+    long_rule = "DLP_RULE_CUSTOM_ENTERPRISE_ORGANIZATION_DATABASE_CREDENTIAL_OVERFLOW_STRING_12345"
+    assert len(long_rule) > 64
+    ev_long = log_security_event(
+        request_id="req-rule-long",
+        endpoint="/api/v1/proxy",
+        decision="ALLOW",
+        matched_rule_ids=[],
+        risk_score=0.2,
+        forwarded=True,
+        prompt="p",
+        output_status="FINDINGS_DETECTED",
+        output_matched_rule_ids=[long_rule],
+    )
+    stored_rule = ev_long["output_matched_rule_ids"][0]
+    assert len(stored_rule) == 64
+    assert stored_rule == long_rule[:64]
+
+    # 4. Empty, None, or non-string rule entries handled safely without crashing
+    malformed_rules = ["", None, 12345, "SPECIAL!@#CHAR"]
+    ev_malformed = log_output_security_event(
+        request_id="req-rules-malformed",
+        endpoint="/api/v1/proxy",
+        outcome="ALLOWED",
+        matched_rule_ids=malformed_rules,  # type: ignore
+    )
+    # Empty string -> unknown_rule
+    assert ev_malformed["matched_rule_ids"][0] == "unknown_rule"
+    # None -> unknown_rule
+    assert ev_malformed["matched_rule_ids"][1] == "unknown_rule"
+    # Integer -> safely stringified to "12345"
+    assert ev_malformed["matched_rule_ids"][2] == "12345"
+    # Disallowed characters converted to '_'
+    assert ev_malformed["matched_rule_ids"][3] == "SPECIAL___CHAR"
+
+    # None passed as rule list defaults cleanly to empty list
+    ev_none = log_security_event(
+        request_id="req-rules-none",
+        endpoint="/api/v1/proxy",
+        decision="ALLOW",
+        matched_rule_ids=[],
+        risk_score=0.0,
+        forwarded=True,
+        prompt="p",
+        output_status="CLEAN",
+        output_matched_rule_ids=None,
+    )
+    assert ev_none["output_matched_rule_ids"] == []
+
+    clear_audit_events()
+
+
+def test_output_security_audit_privacy_sentinel_and_leakage_prevention():
+    """Verify that raw downstream messages, synthetic secrets, connection strings,
+    and exception details never appear in stored audit events.
+    """
+    clear_audit_events()
+
+    synthetic_secret_key = "sk-abcdef1234567890abcdef1234567890"
+    synthetic_password = "SuperSecretPassword123!"
+    synthetic_uri = "postgres://admin:super_secret_pwd@db.internal:5432/finance"
+    synthetic_downstream_body = (
+        f"API response: token={synthetic_secret_key}, db={synthetic_uri}, pass={synthetic_password}"
+    )
+    synthetic_exception = RuntimeError(f"Downstream scan failed with: {synthetic_password}")
+
+    # Log events across standard proxy, RAG proxy, and dedicated output audit
+    ev_std = log_security_event(
+        request_id="req-priv-std",
+        endpoint="/api/v1/proxy",
+        decision="ALLOW",
+        matched_rule_ids=[],
+        risk_score=0.2,
+        forwarded=True,
+        prompt="user query",
+        output_status="FINDINGS_DETECTED",
+        output_findings_count=3,
+        output_matched_rule_ids=[
+            "DLP_RULE_OPENAI_API_KEY",
+            "DLP_RULE_DATABASE_URI_CREDENTIAL",
+            "DLP_RULE_SECRET_ASSIGNMENT",
+        ],
+        output_error_code="FINDINGS_REDACTED",
+    )
+
+    ev_rag = log_rag_security_event(
+        request_id="req-priv-rag",
+        endpoint="/api/v1/rag/proxy",
+        decision="ALLOW",
+        matched_rule_ids=[],
+        risk_score=0.2,
+        forwarded=True,
+        query="rag query",
+        retrieved_doc_ids=["doc-sec-1"],
+        num_retrieved=1,
+        is_complete=True,
+        output_status="FINDINGS_DETECTED",
+        output_findings_count=1,
+        output_matched_rule_ids=["DLP_RULE_DATABASE_URI_CREDENTIAL"],
+        output_error_code="FINDINGS_REDACTED",
+    )
+
+    ev_out = log_output_security_event(
+        request_id="req-priv-out",
+        endpoint="/api/v1/proxy",
+        outcome="BLOCKED",
+        matched_rule_ids=["DLP_RULE_DATABASE_URI_CREDENTIAL"],
+        finding_count=1,
+        error_code="OUTPUT_CRITICAL_BLOCKED",
+    )
+
+    events = get_audit_events()
+    assert len(events) == 3
+
+    forbidden_sentinels = [
+        synthetic_secret_key,
+        synthetic_password,
+        synthetic_uri,
+        "super_secret_pwd",
+        "API response:",
+        str(synthetic_exception),
+        "RuntimeError",
+    ]
+
+    for ev in events:
+        event_str = json.dumps(ev)
+        for sentinel in forbidden_sentinels:
+            assert sentinel not in event_str, f"Sentinel '{sentinel}' leaked in audit event: {ev}"
+
+        # Prohibit unsafe keys that might hold unredacted response or error bodies
+        assert "downstream_response" not in ev
+        assert "response" not in ev
+        assert "message" not in ev
+        assert "exception" not in ev
+        assert "traceback" not in ev
+
+        # Ensure only aggregate and sanitized metadata fields are stored
+        if "output_status" in ev:
+            assert isinstance(ev["output_status"], str)
+            assert isinstance(ev["output_findings_count"], int)
+            assert isinstance(ev["output_matched_rule_ids"], list)
+        if "finding_count" in ev:
+            assert isinstance(ev["finding_count"], int)
+            assert isinstance(ev["matched_rule_ids"], list)
+
+    clear_audit_events()
