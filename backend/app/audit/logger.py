@@ -32,6 +32,7 @@ def log_security_event(
     forwarded: bool,
     prompt: str,
     client_request_id: Optional[str] = None,
+    decision_source: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Record a structured security audit event.
 
@@ -45,6 +46,7 @@ def log_security_event(
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "endpoint": endpoint,
         "decision": decision,
+        "decision_source": decision_source,
         "matched_rule_ids": matched_rule_ids,
         "heuristic_risk_score": risk_score,
         "forwarded": forwarded,

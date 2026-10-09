@@ -1,5 +1,4 @@
-"""FastAPI application entrypoint for PromptShield Security Gateway (Phase 1)."""
-
+from contextlib import asynccontextmanager
 import logging
 from typing import List
 import uuid
@@ -8,12 +7,14 @@ from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
 from app.audit.logger import log_security_event
+from app.detection.ml_classifier import get_classifier
 from app.detection.rules import get_configured_rules, scan_prompt
-from app.policies.engine import evaluate_policy
+from app.policies.engine import evaluate_policy, validate_startup_configuration
 from app.proxy.mock_service import forward_to_mock_downstream
 from app.schemas import (
     HealthResponse,
     InspectResponse,
+    MLAssessment,
     PromptRequest,
     ProxyResponse,
     RuleInfo,
@@ -21,10 +22,25 @@ from app.schemas import (
 
 logger = logging.getLogger("promptshield.gateway")
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """FastAPI application lifespan context manager.
+
+    Validates effective ML enforcement policy configuration on startup before accepting requests.
+    """
+    logger.info("Initializing PromptShield Gateway...")
+    mode = validate_startup_configuration()
+    logger.info("PromptShield Gateway initialized with ML enforcement mode: %s", mode)
+    yield
+    logger.info("Shutting down PromptShield Gateway...")
+
+
 app = FastAPI(
     title="PromptShield Security Gateway",
     description="Educational Enterprise LLM Security Gateway — Phase 1 Core Proxy & Rules",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 
@@ -64,6 +80,32 @@ def list_rules() -> List[RuleInfo]:
     ]
 
 
+def _get_ml_assessment(prompt: str) -> MLAssessment:
+    """Safely evaluate prompt with the ML classifier and return structured MLAssessment.
+
+    Resilient error handling:
+    - Never raises an unhandled exception or crashes the gateway request.
+    - Never leaks raw prompt text, filesystem paths, or stack traces.
+    - Preserves the configured threshold and model version.
+    - Gracefully degrades to an unavailable assessment if ML is disabled or failing.
+    """
+    try:
+        classifier = get_classifier()
+        inference_result = classifier.predict(prompt)
+        return MLAssessment.from_inference_result(inference_result)
+    except Exception as exc:
+        logger.warning("ML assessment failed unexpectedly: %s", type(exc).__name__)
+        fallback_threshold = 0.50
+        try:
+            fallback_threshold = get_classifier().threshold
+        except Exception:
+            pass
+        return MLAssessment.unavailable(
+            threshold=fallback_threshold,
+            error_code="INFERENCE_FAILED",
+        )
+
+
 @app.post("/api/v1/inspect", response_model=InspectResponse)
 def inspect_prompt(payload: PromptRequest) -> InspectResponse:
     """Inspect user prompt against security rules and return an authoritative decision.
@@ -73,7 +115,8 @@ def inspect_prompt(payload: PromptRequest) -> InspectResponse:
     """
     server_request_id = str(uuid.uuid4())
     matched_rules = scan_prompt(payload.prompt)
-    decision = evaluate_policy(matched_rules)
+    ml_assessment = _get_ml_assessment(payload.prompt)
+    decision = evaluate_policy(matched_rules, ml_assessment=ml_assessment)
 
     log_security_event(
         request_id=server_request_id,
@@ -84,6 +127,7 @@ def inspect_prompt(payload: PromptRequest) -> InspectResponse:
         forwarded=False,
         prompt=payload.prompt,
         client_request_id=payload.request_id,
+        decision_source=decision.decision_source,
     )
 
     return InspectResponse(
@@ -93,6 +137,8 @@ def inspect_prompt(payload: PromptRequest) -> InspectResponse:
         explanation=decision.explanation,
         request_id=server_request_id,
         client_request_id=payload.request_id,
+        ml_assessment=ml_assessment,
+        decision_source=decision.decision_source,
     )
 
 
@@ -104,7 +150,8 @@ def proxy_prompt(payload: PromptRequest) -> ProxyResponse:
     """
     server_request_id = str(uuid.uuid4())
     matched_rules = scan_prompt(payload.prompt)
-    decision = evaluate_policy(matched_rules)
+    ml_assessment = _get_ml_assessment(payload.prompt)
+    decision = evaluate_policy(matched_rules, ml_assessment=ml_assessment)
 
     downstream_result = None
     forwarded = False
@@ -122,6 +169,7 @@ def proxy_prompt(payload: PromptRequest) -> ProxyResponse:
         forwarded=forwarded,
         prompt=payload.prompt,
         client_request_id=payload.request_id,
+        decision_source=decision.decision_source,
     )
 
     return ProxyResponse(
@@ -131,4 +179,6 @@ def proxy_prompt(payload: PromptRequest) -> ProxyResponse:
         matched_rules=decision.matched_rule_ids,
         explanation=decision.explanation,
         downstream_response=downstream_result,
+        ml_assessment=ml_assessment,
+        decision_source=decision.decision_source,
     )

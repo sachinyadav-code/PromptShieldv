@@ -1,0 +1,462 @@
+{
+  "model_version": "v1",
+  "artifact_file": "prompt_injection_v1.joblib",
+  "trained_at": "2026-10-08T18:35:50.164550+00:00",
+  "datasets": {
+    "developmental_dataset": {
+      "path": "datasets/prompts_dataset_v1.jsonl",
+      "sha256": "166b7f0fc402b78b733309391d8da3aae4f534d4c5bad81d326cfb9a0bb14603",
+      "total_samples": 120,
+      "split_counts": {
+        "train": {
+          "total": 84,
+          "benign": 42,
+          "injection": 42
+        },
+        "validation": {
+          "total": 18,
+          "benign": 9,
+          "injection": 9
+        },
+        "exploratory_test": {
+          "total": 18,
+          "benign": 9,
+          "injection": 9
+        }
+      }
+    },
+    "independent_holdout_dataset": {
+      "path": "datasets/prompts_independent_holdout.jsonl",
+      "sha256": "c31c711321be1c9c37c3fb91131f52d92b50897ddad112de30c4595ea5f82a3a",
+      "total_samples": 20,
+      "benign": 10,
+      "injection": 10
+    }
+  },
+  "feature_configuration": {
+    "vectorizer": "TfidfVectorizer",
+    "ngram_range": [
+      1,
+      2
+    ],
+    "max_features": 5000,
+    "sublinear_tf": true,
+    "strip_accents": "unicode",
+    "lowercase": true,
+    "fitted_vocabulary_size": 1507
+  },
+  "classifier_configuration": {
+    "algorithm": "LogisticRegression",
+    "class_weight": "balanced",
+    "random_state": 42,
+    "C": 1.0,
+    "max_iter": 1000,
+    "solver": "lbfgs"
+  },
+  "threshold_selection": {
+    "selected_threshold": 0.5,
+    "selection_criterion": "Empirical search over thresholds in [0.10, 0.90] with step 0.01 on validation split. Priority 1: Zero False Positives (FP == 0) on benign prompts to avoid false blocking. Priority 2: Maximize Recall on injection prompts (minimize FN). Tie-breaking: Select the median/midpoint of the optimal candidate interval.",
+    "fallback_used": false,
+    "validation_metrics": {
+      "accuracy": 1.0,
+      "macro_precision": 1.0,
+      "macro_recall": 1.0,
+      "macro_f1": 1.0,
+      "per_class": {
+        "benign": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1_score": 1.0,
+          "support": 9
+        },
+        "injection": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1_score": 1.0,
+          "support": 9
+        }
+      },
+      "confusion_matrix": {
+        "true_negatives_benign": 9,
+        "false_positives_falsely_flagged": 0,
+        "false_negatives_missed_attacks": 0,
+        "true_positives_detected_attacks": 9
+      },
+      "false_positive_rate": 0.0,
+      "false_negative_rate": 0.0
+    },
+    "threshold_sweep_sample": [
+      {
+        "threshold": 0.1,
+        "fp": 9,
+        "fn": 0,
+        "tp": 9,
+        "tn": 0,
+        "f1_injection": 0.6667,
+        "precision": 0.5,
+        "recall": 1.0
+      },
+      {
+        "threshold": 0.15,
+        "fp": 9,
+        "fn": 0,
+        "tp": 9,
+        "tn": 0,
+        "f1_injection": 0.6667,
+        "precision": 0.5,
+        "recall": 1.0
+      },
+      {
+        "threshold": 0.2,
+        "fp": 9,
+        "fn": 0,
+        "tp": 9,
+        "tn": 0,
+        "f1_injection": 0.6667,
+        "precision": 0.5,
+        "recall": 1.0
+      },
+      {
+        "threshold": 0.25,
+        "fp": 9,
+        "fn": 0,
+        "tp": 9,
+        "tn": 0,
+        "f1_injection": 0.6667,
+        "precision": 0.5,
+        "recall": 1.0
+      },
+      {
+        "threshold": 0.3,
+        "fp": 9,
+        "fn": 0,
+        "tp": 9,
+        "tn": 0,
+        "f1_injection": 0.6667,
+        "precision": 0.5,
+        "recall": 1.0
+      },
+      {
+        "threshold": 0.35,
+        "fp": 9,
+        "fn": 0,
+        "tp": 9,
+        "tn": 0,
+        "f1_injection": 0.6667,
+        "precision": 0.5,
+        "recall": 1.0
+      },
+      {
+        "threshold": 0.4,
+        "fp": 4,
+        "fn": 0,
+        "tp": 9,
+        "tn": 5,
+        "f1_injection": 0.8182,
+        "precision": 0.6923,
+        "recall": 1.0
+      },
+      {
+        "threshold": 0.45,
+        "fp": 2,
+        "fn": 0,
+        "tp": 9,
+        "tn": 7,
+        "f1_injection": 0.9,
+        "precision": 0.8182,
+        "recall": 1.0
+      },
+      {
+        "threshold": 0.5,
+        "fp": 0,
+        "fn": 0,
+        "tp": 9,
+        "tn": 9,
+        "f1_injection": 1.0,
+        "precision": 1.0,
+        "recall": 1.0
+      },
+      {
+        "threshold": 0.55,
+        "fp": 0,
+        "fn": 2,
+        "tp": 7,
+        "tn": 9,
+        "f1_injection": 0.875,
+        "precision": 1.0,
+        "recall": 0.7778
+      },
+      {
+        "threshold": 0.6,
+        "fp": 0,
+        "fn": 7,
+        "tp": 2,
+        "tn": 9,
+        "f1_injection": 0.3636,
+        "precision": 1.0,
+        "recall": 0.2222
+      },
+      {
+        "threshold": 0.65,
+        "fp": 0,
+        "fn": 8,
+        "tp": 1,
+        "tn": 9,
+        "f1_injection": 0.2,
+        "precision": 1.0,
+        "recall": 0.1111
+      },
+      {
+        "threshold": 0.7,
+        "fp": 0,
+        "fn": 9,
+        "tp": 0,
+        "tn": 9,
+        "f1_injection": 0.0,
+        "precision": 0.0,
+        "recall": 0.0
+      },
+      {
+        "threshold": 0.75,
+        "fp": 0,
+        "fn": 9,
+        "tp": 0,
+        "tn": 9,
+        "f1_injection": 0.0,
+        "precision": 0.0,
+        "recall": 0.0
+      },
+      {
+        "threshold": 0.8,
+        "fp": 0,
+        "fn": 9,
+        "tp": 0,
+        "tn": 9,
+        "f1_injection": 0.0,
+        "precision": 0.0,
+        "recall": 0.0
+      },
+      {
+        "threshold": 0.85,
+        "fp": 0,
+        "fn": 9,
+        "tp": 0,
+        "tn": 9,
+        "f1_injection": 0.0,
+        "precision": 0.0,
+        "recall": 0.0
+      },
+      {
+        "threshold": 0.9,
+        "fp": 0,
+        "fn": 9,
+        "tp": 0,
+        "tn": 9,
+        "f1_injection": 0.0,
+        "precision": 0.0,
+        "recall": 0.0
+      }
+    ]
+  },
+  "exploratory_developmental_test_evaluation": {
+    "integrity_disclosure": "Individual prediction scores for this partition were displayed in exploratory logs during threshold development. Therefore, results on this split are reported as exploratory developmental metrics rather than an uninspected test.",
+    "sample_count": 18,
+    "metrics": {
+      "accuracy": 1.0,
+      "macro_precision": 1.0,
+      "macro_recall": 1.0,
+      "macro_f1": 1.0,
+      "per_class": {
+        "benign": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1_score": 1.0,
+          "support": 9
+        },
+        "injection": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1_score": 1.0,
+          "support": 9
+        }
+      },
+      "confusion_matrix": {
+        "true_negatives_benign": 9,
+        "false_positives_falsely_flagged": 0,
+        "false_negatives_missed_attacks": 0,
+        "true_positives_detected_attacks": 9
+      },
+      "false_positive_rate": 0.0,
+      "false_negative_rate": 0.0
+    }
+  },
+  "independent_final_holdout_evaluation": {
+    "evaluation_design": "Genuinely new, independently authored synthetic evaluation set. Held strictly untouched and never inspected during model training or threshold tuning.",
+    "sample_count": 20,
+    "metrics": {
+      "accuracy": 0.95,
+      "macro_precision": 0.9545,
+      "macro_recall": 0.95,
+      "macro_f1": 0.9499,
+      "per_class": {
+        "benign": {
+          "precision": 0.9091,
+          "recall": 1.0,
+          "f1_score": 0.9524,
+          "support": 10
+        },
+        "injection": {
+          "precision": 1.0,
+          "recall": 0.9,
+          "f1_score": 0.9474,
+          "support": 10
+        }
+      },
+      "confusion_matrix": {
+        "true_negatives_benign": 10,
+        "false_positives_falsely_flagged": 0,
+        "false_negatives_missed_attacks": 1,
+        "true_positives_detected_attacks": 9
+      },
+      "false_positive_rate": 0.0,
+      "false_negative_rate": 0.1
+    }
+  },
+  "package_versions": {
+    "python": "3.14.8",
+    "scikit-learn": "1.9.1",
+    "joblib": "1.6.0",
+    "numpy": "2.5.3",
+    "scipy": "1.18.1"
+  },
+  "top_features": {
+    "top_injection_indicators": [
+      {
+        "feature": "your",
+        "coefficient": 0.7089
+      },
+      {
+        "feature": "all",
+        "coefficient": 0.6378
+      },
+      {
+        "feature": "system",
+        "coefficient": 0.5297
+      },
+      {
+        "feature": "you",
+        "coefficient": 0.5244
+      },
+      {
+        "feature": "instructions",
+        "coefficient": 0.4879
+      },
+      {
+        "feature": "prompt",
+        "coefficient": 0.4876
+      },
+      {
+        "feature": "safety",
+        "coefficient": 0.4839
+      },
+      {
+        "feature": "you are",
+        "coefficient": 0.4481
+      },
+      {
+        "feature": "now",
+        "coefficient": 0.4288
+      },
+      {
+        "feature": "developer",
+        "coefficient": 0.4147
+      },
+      {
+        "feature": "previous",
+        "coefficient": 0.3788
+      },
+      {
+        "feature": "system prompt",
+        "coefficient": 0.3521
+      },
+      {
+        "feature": "ai",
+        "coefficient": 0.3507
+      },
+      {
+        "feature": "filters",
+        "coefficient": 0.3232
+      },
+      {
+        "feature": "rules",
+        "coefficient": 0.3206
+      }
+    ],
+    "top_benign_indicators": [
+      {
+        "feature": "how",
+        "coefficient": -0.5895
+      },
+      {
+        "feature": "what",
+        "coefficient": -0.3539
+      },
+      {
+        "feature": "what are",
+        "coefficient": -0.3436
+      },
+      {
+        "feature": "between",
+        "coefficient": -0.343
+      },
+      {
+        "feature": "explain",
+        "coefficient": -0.3369
+      },
+      {
+        "feature": "in",
+        "coefficient": -0.2993
+      },
+      {
+        "feature": "how do",
+        "coefficient": -0.2969
+      },
+      {
+        "feature": "can",
+        "coefficient": -0.2889
+      },
+      {
+        "feature": "python",
+        "coefficient": -0.2883
+      },
+      {
+        "feature": "what is",
+        "coefficient": -0.2759
+      },
+      {
+        "feature": "is",
+        "coefficient": -0.26
+      },
+      {
+        "feature": "are the",
+        "coefficient": -0.2562
+      },
+      {
+        "feature": "explain the",
+        "coefficient": -0.2469
+      },
+      {
+        "feature": "difference",
+        "coefficient": -0.2445
+      },
+      {
+        "feature": "difference between",
+        "coefficient": -0.2445
+      }
+    ]
+  },
+  "score_nature_and_limitations": {
+    "uncalibrated_scores": "Logistic regression decision values are monotonic heuristic indicator scores derived from the sigmoid link function. They are uncalibrated and must not be interpreted as Bayesian probabilities of attack success or safety guarantees.",
+    "dataset_limitations": "Trained on a synthetic benchmark dataset (84 train records). Evaluated on 18 validation, 18 exploratory test, and 20 independent holdout records. The small dataset cannot represent open-domain user variance or evolving multi-turn adversarial injection tactics. Deterministic rules remain sovereign and must always take precedence over ML predictions."
+  }
+}
