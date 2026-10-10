@@ -580,6 +580,14 @@ class AuditEventResponse(BaseModel):
     output_findings_count: Optional[int] = Field(default=None, description="Output finding count.")
     output_matched_rule_ids: List[str] = Field(default_factory=list, description="Output matched rule IDs.")
     output_error_code: Optional[str] = Field(default=None, description="Output error code if present.")
+    ingress_pipeline_version: Optional[str] = Field(default=None, description="Ingress inspection pipeline version.")
+    ingress_surface: Optional[str] = Field(default=None, description="Ingress surface inspected (e.g. prompt or rag_query).")
+    ingress_views_evaluated: List[str] = Field(default_factory=list, description="Allowlisted ingress views evaluated.")
+    ingress_views_count: Optional[int] = Field(default=None, description="Count of evaluated ingress views.")
+    ingress_transformation_status: Optional[str] = Field(default=None, description="Transformation status: SUCCESS or TRANSFORMATION_FAILED.")
+    ingress_transformation_error_code: Optional[str] = Field(default=None, description="Error code if transformation failed.")
+    ml_available: Optional[bool] = Field(default=None, description="Whether ML classifier was available.")
+    ml_risk_score: Optional[float] = Field(default=None, ge=0.0, le=1.0, description="Highest evaluated ML risk score.")
 
 
 class AuditQueryResponse(BaseModel):

@@ -56,6 +56,92 @@ RULE_MALFORMED_ENCODING = DetectionRule(
     risk_weight=0.95,
 )
 
+ALLOWED_INGRESS_VIEWS = (
+    "raw",
+    "normalized",
+    "decoded",
+    "combined_normalized_decoded",
+    "decoded_normalized",
+)
+
+ALLOWED_INGRESS_ERROR_CODES = (
+    "INVALID_PROMPT_TYPE",
+    "PROMPT_LENGTH_EXCEEDED",
+    "NORMALIZATION_LIMIT_EXCEEDED",
+    "NORMALIZATION_FAILED",
+    "DECODING_LIMIT_EXCEEDED",
+    "MALFORMED_ENCODING",
+    "COMBINED_TRANSFORMATION_FAILED",
+)
+
+
+def extract_ingress_telemetry(
+    views: Optional["IngressInspectionViews"] = None,
+    error_code: Optional[str] = None,
+    surface: str = "prompt",
+    ml_assessment: Optional[MLAssessment] = None,
+) -> Dict[str, Any]:
+    """Extract safe, sanitized telemetry metadata from ingress views or transformation errors.
+
+    Guarantees:
+    - Never exposes or logs raw, normalized, or decoded prompt text.
+    - View names are restricted strictly to the allowlisted tuple of known view keys.
+    - View count is bounded to [1, 5].
+    - Status is strictly 'SUCCESS' or 'TRANSFORMATION_FAILED'.
+    - Surface is sanitized to 'prompt', 'rag_query', or a bounded safe identifier.
+    - Error codes are strictly allowlisted against known ingress transformation error codes.
+    - ML metrics (ml_available, ml_risk_score) are extracted safely if present.
+    """
+    safe_surface = "rag_query" if surface == "rag_query" else "prompt"
+
+    if error_code is not None or views is None:
+        if isinstance(error_code, str) and error_code in ALLOWED_INGRESS_ERROR_CODES:
+            safe_error = error_code
+        else:
+            safe_error = "MALFORMED_ENCODING"
+        # On transformation failure, only raw input was seen
+        telemetry: Dict[str, Any] = {
+            "ingress_pipeline_version": "v1",
+            "ingress_surface": safe_surface,
+            "ingress_views_evaluated": ["raw"],
+            "ingress_views_count": 1,
+            "ingress_transformation_status": "TRANSFORMATION_FAILED",
+            "ingress_transformation_error_code": safe_error,
+        }
+    else:
+        # Determine unique non-empty views evaluated
+        evaluated: List[str] = ["raw"]
+        if views.normalized is not None:
+            evaluated.append("normalized")
+        if views.decoded is not None:
+            evaluated.append("decoded")
+        if views.combined_normalized_decoded is not None:
+            evaluated.append("combined_normalized_decoded")
+        if views.decoded_normalized is not None:
+            evaluated.append("decoded_normalized")
+
+        safe_views = [v for v in evaluated if v in ALLOWED_INGRESS_VIEWS][:5]
+        telemetry = {
+            "ingress_pipeline_version": "v1",
+            "ingress_surface": safe_surface,
+            "ingress_views_evaluated": safe_views,
+            "ingress_views_count": max(1, min(len(safe_views), 5)),
+            "ingress_transformation_status": "SUCCESS",
+            "ingress_transformation_error_code": None,
+        }
+
+    if ml_assessment is not None:
+        telemetry["ml_available"] = bool(ml_assessment.available)
+        if ml_assessment.available and ml_assessment.score is not None:
+            telemetry["ml_risk_score"] = round(max(0.0, min(float(ml_assessment.score), 1.0)), 4)
+        else:
+            telemetry["ml_risk_score"] = None
+    else:
+        telemetry["ml_available"] = None
+        telemetry["ml_risk_score"] = None
+
+    return telemetry
+
 
 @dataclass(frozen=True)
 class IngressInspectionViews:

@@ -73,6 +73,14 @@ class SQLiteAuditStore:
         output_findings_count INTEGER,
         output_matched_rule_ids TEXT,
         output_error_code TEXT,
+        ingress_pipeline_version TEXT,
+        ingress_surface TEXT,
+        ingress_views_evaluated TEXT,
+        ingress_views_count INTEGER,
+        ingress_transformation_status TEXT,
+        ingress_transformation_error_code TEXT,
+        ml_available INTEGER,
+        ml_risk_score REAL,
         created_at TEXT NOT NULL
     );
 
@@ -112,6 +120,24 @@ class SQLiteAuditStore:
                 conn = self._get_connection()
                 try:
                     conn.executescript(self._SCHEMA)
+                    # Migrate existing tables missing the Stage 7.4 columns
+                    existing_cols = {
+                        row["name"]
+                        for row in conn.execute("PRAGMA table_info(audit_events);").fetchall()
+                    }
+                    columns_to_add = [
+                        ("ingress_pipeline_version", "TEXT"),
+                        ("ingress_surface", "TEXT"),
+                        ("ingress_views_evaluated", "TEXT"),
+                        ("ingress_views_count", "INTEGER"),
+                        ("ingress_transformation_status", "TEXT"),
+                        ("ingress_transformation_error_code", "TEXT"),
+                        ("ml_available", "INTEGER"),
+                        ("ml_risk_score", "REAL"),
+                    ]
+                    for col_name, col_type in columns_to_add:
+                        if col_name not in existing_cols:
+                            conn.execute(f"ALTER TABLE audit_events ADD COLUMN {col_name} {col_type};")
                 finally:
                     conn.close()
                 self._initialized = True
@@ -173,6 +199,26 @@ class SQLiteAuditStore:
             else None
         )
         output_error_code = event.get("output_error_code")
+
+        # Ingress telemetry fields
+        ingress_pipeline_version = event.get("ingress_pipeline_version")
+        ingress_surface = event.get("ingress_surface")
+        ingress_views_evaluated_json = (
+            json.dumps(event.get("ingress_views_evaluated"))
+            if event.get("ingress_views_evaluated") is not None
+            else None
+        )
+        ingress_views_count = event.get("ingress_views_count")
+        ingress_transformation_status = event.get("ingress_transformation_status")
+        ingress_transformation_error_code = event.get("ingress_transformation_error_code")
+        ml_available = (
+            1 if event.get("ml_available") is True else (0 if event.get("ml_available") is False else None)
+        )
+        ml_risk_score = (
+            float(event["ml_risk_score"])
+            if event.get("ml_risk_score") is not None
+            else None
+        )
         created_at = datetime.now(timezone.utc).isoformat()
 
         insert_sql = """
@@ -181,13 +227,17 @@ class SQLiteAuditStore:
             event_type, matched_rule_ids, heuristic_risk_score, forwarded, prompt_length, prompt_sha256,
             query_length, query_sha256, retrieved_doc_ids, num_retrieved, is_complete, error_code,
             outcome, finding_count, output_status, output_findings_count, output_matched_rule_ids,
-            output_error_code, created_at
+            output_error_code, ingress_pipeline_version, ingress_surface, ingress_views_evaluated,
+            ingress_views_count, ingress_transformation_status, ingress_transformation_error_code,
+            ml_available, ml_risk_score, created_at
         ) VALUES (
             ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?,
-            ?, ?
+            ?, ?, ?, ?,
+            ?, ?, ?,
+            ?, ?, ?
         );
         """
         params = (
@@ -195,7 +245,9 @@ class SQLiteAuditStore:
             event_type, matched_rules_json, heuristic_risk_score, forwarded, prompt_length, prompt_sha256,
             query_length, query_sha256, retrieved_docs_json, num_retrieved, is_complete, error_code,
             outcome, finding_count, output_status, output_findings_count, output_matched_rules_json,
-            output_error_code, created_at,
+            output_error_code, ingress_pipeline_version, ingress_surface, ingress_views_evaluated_json,
+            ingress_views_count, ingress_transformation_status, ingress_transformation_error_code,
+            ml_available, ml_risk_score, created_at,
         )
 
         with self._lock:
@@ -387,6 +439,26 @@ class SQLiteAuditStore:
                 result["output_matched_rule_ids"] = []
         if d["output_error_code"] is not None:
             result["output_error_code"] = d["output_error_code"]
+
+        if d.get("ingress_pipeline_version") is not None:
+            result["ingress_pipeline_version"] = d["ingress_pipeline_version"]
+        if d.get("ingress_surface") is not None:
+            result["ingress_surface"] = d["ingress_surface"]
+        if d.get("ingress_views_evaluated") is not None:
+            try:
+                result["ingress_views_evaluated"] = json.loads(d["ingress_views_evaluated"])
+            except Exception:
+                result["ingress_views_evaluated"] = []
+        if d.get("ingress_views_count") is not None:
+            result["ingress_views_count"] = int(d["ingress_views_count"])
+        if d.get("ingress_transformation_status") is not None:
+            result["ingress_transformation_status"] = d["ingress_transformation_status"]
+        if d.get("ingress_transformation_error_code") is not None:
+            result["ingress_transformation_error_code"] = d["ingress_transformation_error_code"]
+        if d.get("ml_available") is not None:
+            result["ml_available"] = bool(d["ml_available"])
+        if d.get("ml_risk_score") is not None:
+            result["ml_risk_score"] = float(d["ml_risk_score"])
 
         return result
 

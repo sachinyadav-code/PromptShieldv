@@ -30,6 +30,8 @@ from app.detection.ingress import (
     IngressTransformationError,
     RULE_MALFORMED_ENCODING,
     evaluate_ingress_prompt_ml,
+    extract_ingress_telemetry,
+    generate_ingress_views,
     inspect_ingress_prompt,
 )
 from app.detection.ml_classifier import get_classifier
@@ -298,6 +300,11 @@ def inspect_prompt(payload: PromptRequest) -> InspectResponse:
         all_matched = list(matched_dict.values())
         ml_assessment = ingress_result.ml_assessment
         decision = evaluate_policy(all_matched, ml_assessment=ml_assessment)
+        ingress_telemetry = extract_ingress_telemetry(
+            views=ingress_result.views,
+            surface="prompt",
+            ml_assessment=ml_assessment,
+        )
     except IngressTransformationError as err:
         logger.warning("Ingress transformation error on /api/v1/inspect: %s (%s)", err.error_code, err.detail)
         matched_dict = {r.rule_id: r for r in matched_rules}
@@ -305,6 +312,11 @@ def inspect_prompt(payload: PromptRequest) -> InspectResponse:
         all_matched = list(matched_dict.values())
         ml_assessment = _get_ml_assessment(payload.prompt)
         decision = evaluate_policy(all_matched, ml_assessment=ml_assessment)
+        ingress_telemetry = extract_ingress_telemetry(
+            error_code=err.error_code,
+            surface="prompt",
+            ml_assessment=ml_assessment,
+        )
 
     log_security_event(
         request_id=server_request_id,
@@ -316,6 +328,7 @@ def inspect_prompt(payload: PromptRequest) -> InspectResponse:
         prompt=payload.prompt,
         client_request_id=payload.request_id,
         decision_source=decision.decision_source,
+        ingress_telemetry=ingress_telemetry,
     )
 
     return InspectResponse(
@@ -358,6 +371,11 @@ def proxy_prompt(payload: PromptRequest) -> ProxyResponse:
         all_matched = list(matched_dict.values())
         ml_assessment = ingress_result.ml_assessment
         decision = evaluate_policy(all_matched, ml_assessment=ml_assessment)
+        ingress_telemetry = extract_ingress_telemetry(
+            views=ingress_result.views,
+            surface="prompt",
+            ml_assessment=ml_assessment,
+        )
     except IngressTransformationError as err:
         logger.warning("Ingress transformation error on /api/v1/proxy: %s (%s)", err.error_code, err.detail)
         matched_dict = {r.rule_id: r for r in matched_rules}
@@ -365,6 +383,11 @@ def proxy_prompt(payload: PromptRequest) -> ProxyResponse:
         all_matched = list(matched_dict.values())
         ml_assessment = _get_ml_assessment(payload.prompt)
         decision = evaluate_policy(all_matched, ml_assessment=ml_assessment)
+        ingress_telemetry = extract_ingress_telemetry(
+            error_code=err.error_code,
+            surface="prompt",
+            ml_assessment=ml_assessment,
+        )
 
     downstream_result = None
     forwarded = False
@@ -389,6 +412,7 @@ def proxy_prompt(payload: PromptRequest) -> ProxyResponse:
                 output_findings_count=0,
                 output_matched_rule_ids=[],
                 output_error_code="DOWNSTREAM_CALL_FAILED",
+                ingress_telemetry=ingress_telemetry,
             )
             return ProxyResponse(
                 decision="BLOCK",
@@ -413,6 +437,7 @@ def proxy_prompt(payload: PromptRequest) -> ProxyResponse:
             prompt=payload.prompt,
             client_request_id=payload.request_id,
             decision_source=decision.decision_source,
+            ingress_telemetry=ingress_telemetry,
         )
         return ProxyResponse(
             decision=decision.decision,
@@ -457,6 +482,7 @@ def proxy_prompt(payload: PromptRequest) -> ProxyResponse:
         output_findings_count=output_enforcement.finding_count,
         output_matched_rule_ids=output_enforcement.matched_rule_ids,
         output_error_code=output_enforcement.error_code,
+        ingress_telemetry=ingress_telemetry,
     )
 
     return ProxyResponse(
@@ -538,6 +564,12 @@ def inspect_rag(payload: RAGRequest) -> RAGInspectResponse:
 
     # 1. Load corpus (fail closed if loading fails)
     try:
+        views = generate_ingress_views(payload.query)
+        ingress_telemetry = extract_ingress_telemetry(views=views, surface="rag_query")
+    except IngressTransformationError as ite:
+        ingress_telemetry = extract_ingress_telemetry(error_code=ite.error_code, surface="rag_query")
+
+    try:
         corpus = get_rag_corpus()
     except (CorpusLoadError, FileNotFoundError, OSError) as exc:
         logger.warning("Corpus loading failed: %s", type(exc).__name__)
@@ -555,6 +587,7 @@ def inspect_rag(payload: RAGRequest) -> RAGInspectResponse:
             client_request_id=payload.request_id,
             decision_source="rag_inspection",
             error_code="CORPUS_LOAD_ERROR",
+            ingress_telemetry=ingress_telemetry,
         )
         return RAGInspectResponse(
             decision="REVIEW",
@@ -585,6 +618,18 @@ def inspect_rag(payload: RAGRequest) -> RAGInspectResponse:
         # 3. Direct query ML assessment across ingress views
         ml_assessment = evaluate_ingress_prompt_ml(payload.query, classifier=get_classifier())
 
+        # Update telemetry with ML metrics
+        if "ingress_transformation_status" in ingress_telemetry and ingress_telemetry["ingress_transformation_status"] == "SUCCESS":
+            ingress_telemetry = extract_ingress_telemetry(
+                views=views,
+                surface="rag_query",
+                ml_assessment=ml_assessment,
+            )
+        else:
+            ingress_telemetry["ml_available"] = bool(ml_assessment.available)
+            if ml_assessment.available and ml_assessment.score is not None:
+                ingress_telemetry["ml_risk_score"] = round(max(0.0, min(float(ml_assessment.score), 1.0)), 4)
+
         # 4. Multi-level RAG security inspection
         report = inspect_rag_request(
             query=payload.query,
@@ -612,6 +657,7 @@ def inspect_rag(payload: RAGRequest) -> RAGInspectResponse:
             client_request_id=payload.request_id,
             decision_source="rag_inspection",
             error_code="INSPECTION_FAILED",
+            ingress_telemetry=ingress_telemetry,
         )
         return RAGInspectResponse(
             decision="REVIEW",
@@ -645,6 +691,7 @@ def inspect_rag(payload: RAGRequest) -> RAGInspectResponse:
         is_complete=report.is_complete,
         client_request_id=payload.request_id,
         decision_source=policy_decision.decision_source,
+        ingress_telemetry=ingress_telemetry,
     )
 
     # 7. Build structured response
@@ -717,6 +764,12 @@ def proxy_rag(payload: RAGRequest) -> RAGProxyResponse:
 
     # 1. Load corpus (fail closed if loading fails)
     try:
+        views = generate_ingress_views(payload.query)
+        ingress_telemetry = extract_ingress_telemetry(views=views, surface="rag_query")
+    except IngressTransformationError as ite:
+        ingress_telemetry = extract_ingress_telemetry(error_code=ite.error_code, surface="rag_query")
+
+    try:
         corpus = get_rag_corpus()
     except (CorpusLoadError, FileNotFoundError, OSError) as exc:
         logger.warning("Corpus loading failed: %s", type(exc).__name__)
@@ -734,6 +787,7 @@ def proxy_rag(payload: RAGRequest) -> RAGProxyResponse:
             client_request_id=payload.request_id,
             decision_source="rag_inspection",
             error_code="CORPUS_LOAD_ERROR",
+            ingress_telemetry=ingress_telemetry,
         )
         return RAGProxyResponse(
             decision="REVIEW",
@@ -766,6 +820,18 @@ def proxy_rag(payload: RAGRequest) -> RAGProxyResponse:
         # 3. Direct query ML assessment across ingress views
         ml_assessment = evaluate_ingress_prompt_ml(payload.query, classifier=get_classifier())
 
+        # Update telemetry with ML metrics
+        if "ingress_transformation_status" in ingress_telemetry and ingress_telemetry["ingress_transformation_status"] == "SUCCESS":
+            ingress_telemetry = extract_ingress_telemetry(
+                views=views,
+                surface="rag_query",
+                ml_assessment=ml_assessment,
+            )
+        else:
+            ingress_telemetry["ml_available"] = bool(ml_assessment.available)
+            if ml_assessment.available and ml_assessment.score is not None:
+                ingress_telemetry["ml_risk_score"] = round(max(0.0, min(float(ml_assessment.score), 1.0)), 4)
+
         # 4. Multi-level RAG security inspection
         report = inspect_rag_request(
             query=payload.query,
@@ -793,6 +859,7 @@ def proxy_rag(payload: RAGRequest) -> RAGProxyResponse:
             client_request_id=payload.request_id,
             decision_source="rag_inspection",
             error_code="INSPECTION_FAILED",
+            ingress_telemetry=ingress_telemetry,
         )
         return RAGProxyResponse(
             decision="REVIEW",
@@ -881,6 +948,7 @@ def proxy_rag(payload: RAGRequest) -> RAGProxyResponse:
                 output_findings_count=0,
                 output_matched_rule_ids=[],
                 output_error_code="DOWNSTREAM_CALL_FAILED",
+                ingress_telemetry=ingress_telemetry,
             )
             return RAGProxyResponse(
                 decision="BLOCK",
@@ -957,6 +1025,7 @@ def proxy_rag(payload: RAGRequest) -> RAGProxyResponse:
         output_findings_count=audit_output_findings_count,
         output_matched_rule_ids=audit_output_matched_rule_ids,
         output_error_code=audit_output_error_code,
+        ingress_telemetry=ingress_telemetry,
     )
 
     return RAGProxyResponse(

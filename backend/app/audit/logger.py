@@ -28,6 +28,7 @@ from app.audit.storage import (
     SQLiteAuditStore,
     get_audit_store,
 )
+from app.detection.ingress import ALLOWED_INGRESS_ERROR_CODES
 
 logger = logging.getLogger("promptshield.audit")
 
@@ -80,6 +81,7 @@ def log_security_event(
     output_findings_count: Optional[int] = None,
     output_matched_rule_ids: Optional[List[str]] = None,
     output_error_code: Optional[str] = None,
+    ingress_telemetry: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Record a structured security audit event.
 
@@ -132,6 +134,40 @@ def log_security_event(
             else None
         )
 
+    if ingress_telemetry:
+        event["ingress_pipeline_version"] = sanitize_audit_id(
+            ingress_telemetry.get("ingress_pipeline_version"), max_length=16, fallback="v1"
+        )
+        event["ingress_surface"] = sanitize_audit_id(
+            ingress_telemetry.get("ingress_surface"), max_length=32, fallback="prompt"
+        )
+        views = ingress_telemetry.get("ingress_views_evaluated")
+        if isinstance(views, (list, tuple)):
+            allowed = {"raw", "normalized", "decoded", "combined_normalized_decoded", "decoded_normalized"}
+            event["ingress_views_evaluated"] = [str(v) for v in views if str(v) in allowed][:5]
+        else:
+            event["ingress_views_evaluated"] = ["raw"]
+        raw_count = ingress_telemetry.get("ingress_views_count")
+        event["ingress_views_count"] = max(1, min(int(raw_count if raw_count is not None else 1), 5))
+        event["ingress_transformation_status"] = sanitize_audit_id(
+            ingress_telemetry.get("ingress_transformation_status"), max_length=32, fallback="SUCCESS"
+        )
+        err_code = ingress_telemetry.get("ingress_transformation_error_code")
+        if err_code is not None and isinstance(err_code, str) and err_code in ALLOWED_INGRESS_ERROR_CODES:
+            event["ingress_transformation_error_code"] = err_code
+        elif err_code is not None:
+            event["ingress_transformation_error_code"] = "MALFORMED_ENCODING"
+        else:
+            event["ingress_transformation_error_code"] = None
+        if ingress_telemetry.get("ml_available") is not None:
+            event["ml_available"] = bool(ingress_telemetry["ml_available"])
+        else:
+            event["ml_available"] = None
+        if ingress_telemetry.get("ml_risk_score") is not None:
+            event["ml_risk_score"] = round(max(0.0, min(float(ingress_telemetry["ml_risk_score"]), 1.0)), 4)
+        else:
+            event["ml_risk_score"] = None
+
     event["event_type"] = "security_inspection"
 
     with _audit_lock:
@@ -165,6 +201,7 @@ def log_rag_security_event(
     output_findings_count: Optional[int] = None,
     output_matched_rule_ids: Optional[List[str]] = None,
     output_error_code: Optional[str] = None,
+    ingress_telemetry: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Record a structured security audit event for RAG requests.
 
@@ -228,6 +265,40 @@ def log_rag_security_event(
             if output_error_code is not None
             else None
         )
+
+    if ingress_telemetry:
+        event["ingress_pipeline_version"] = sanitize_audit_id(
+            ingress_telemetry.get("ingress_pipeline_version"), max_length=16, fallback="v1"
+        )
+        event["ingress_surface"] = sanitize_audit_id(
+            ingress_telemetry.get("ingress_surface"), max_length=32, fallback="rag_query"
+        )
+        views = ingress_telemetry.get("ingress_views_evaluated")
+        if isinstance(views, (list, tuple)):
+            allowed = {"raw", "normalized", "decoded", "combined_normalized_decoded", "decoded_normalized"}
+            event["ingress_views_evaluated"] = [str(v) for v in views if str(v) in allowed][:5]
+        else:
+            event["ingress_views_evaluated"] = ["raw"]
+        raw_count = ingress_telemetry.get("ingress_views_count")
+        event["ingress_views_count"] = max(1, min(int(raw_count if raw_count is not None else 1), 5))
+        event["ingress_transformation_status"] = sanitize_audit_id(
+            ingress_telemetry.get("ingress_transformation_status"), max_length=32, fallback="SUCCESS"
+        )
+        err_code = ingress_telemetry.get("ingress_transformation_error_code")
+        if err_code is not None and isinstance(err_code, str) and err_code in ALLOWED_INGRESS_ERROR_CODES:
+            event["ingress_transformation_error_code"] = err_code
+        elif err_code is not None:
+            event["ingress_transformation_error_code"] = "MALFORMED_ENCODING"
+        else:
+            event["ingress_transformation_error_code"] = None
+        if ingress_telemetry.get("ml_available") is not None:
+            event["ml_available"] = bool(ingress_telemetry["ml_available"])
+        else:
+            event["ml_available"] = None
+        if ingress_telemetry.get("ml_risk_score") is not None:
+            event["ml_risk_score"] = round(max(0.0, min(float(ingress_telemetry["ml_risk_score"]), 1.0)), 4)
+        else:
+            event["ml_risk_score"] = None
 
     event["event_type"] = "rag_inspection"
 
