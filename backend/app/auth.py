@@ -135,12 +135,22 @@ async def authenticate_request(request: Request) -> Optional[str]:
     return candidate_key
 
 
+DEFAULT_ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+
+
 def get_allowed_origins() -> list[str]:
     """Parse configured CORS allowed origins from PROMPTSHIELD_ALLOWED_ORIGINS.
 
-    Defaults to empty list (same-origin only).
+    Defaults to local development frontend origins:
+    http://localhost:5173, http://127.0.0.1:5173.
     """
-    raw = os.getenv(ENV_ALLOWED_ORIGINS, "").strip()
+    raw = os.getenv(ENV_ALLOWED_ORIGINS)
+    if raw is None:
+        return list(DEFAULT_ALLOWED_ORIGINS)
+    raw = raw.strip()
     if not raw:
         return []
     origins = [o.strip() for o in raw.split(",") if o.strip()]

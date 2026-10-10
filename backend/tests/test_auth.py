@@ -187,11 +187,31 @@ class TestHttpSecurityHeadersAndCORS:
         assert res.headers.get("X-Frame-Options") == HEADER_FRAME_OPTIONS
         assert res.headers.get("Referrer-Policy") == HEADER_REFERRER_POLICY
 
+    def test_cors_default_local_development_origins(self, monkeypatch):
+        """Verify default configuration allows local frontend origins http://localhost:5173 and http://127.0.0.1:5173."""
+        monkeypatch.delenv(ENV_ALLOWED_ORIGINS, raising=False)
+        monkeypatch.setenv(ENV_API_KEYS, TEST_PRIMARY_KEY)
+        from app.main import app as test_app
+
+        with TestClient(test_app) as client:
+            # 1. Health check with localhost:5173
+            res_lh = client.get("/health", headers={"Origin": "http://localhost:5173"})
+            assert res_lh.status_code == 200
+            assert res_lh.headers.get("access-control-allow-origin") == "http://localhost:5173"
+
+            # 2. Health check with 127.0.0.1:5173
+            res_ip = client.get("/health", headers={"Origin": "http://127.0.0.1:5173"})
+            assert res_ip.status_code == 200
+            assert res_ip.headers.get("access-control-allow-origin") == "http://127.0.0.1:5173"
+
+            # 3. Disallowed origin receives no access-control-allow-origin header
+            res_evil = client.get("/health", headers={"Origin": "http://evil-attacker.com"})
+            assert res_evil.status_code == 200
+            assert "access-control-allow-origin" not in res_evil.headers
+
     def test_cors_preflight_and_origin_headers(self, monkeypatch):
         monkeypatch.setenv(ENV_ALLOWED_ORIGINS, "http://localhost:5173,http://127.0.0.1:5173")
         monkeypatch.setenv(ENV_API_KEYS, TEST_PRIMARY_KEY)
-        from fastapi.middleware.cors import CORSMiddleware
-        from app.auth import get_allowed_origins
         from app.main import app as test_app
 
         # Test preflight OPTIONS request
@@ -207,6 +227,8 @@ class TestHttpSecurityHeadersAndCORS:
             )
             assert res_preflight.status_code == 200
             assert res_preflight.headers.get("access-control-allow-origin") == "http://localhost:5173"
+            assert "Authorization" in res_preflight.headers.get("access-control-allow-headers", "")
+            assert "Content-Type" in res_preflight.headers.get("access-control-allow-headers", "")
 
             # Preflight unauthorized origin
             res_disallowed = client.options(
@@ -217,3 +239,14 @@ class TestHttpSecurityHeadersAndCORS:
                 },
             )
             assert "access-control-allow-origin" not in res_disallowed.headers
+
+    def test_cors_explicit_empty_env_disallows_all_cross_origins(self, monkeypatch):
+        """Setting PROMPTSHIELD_ALLOWED_ORIGINS to empty string disables cross-origin access."""
+        monkeypatch.setenv(ENV_ALLOWED_ORIGINS, "")
+        monkeypatch.setenv(ENV_API_KEYS, TEST_PRIMARY_KEY)
+        from app.main import app as test_app
+
+        with TestClient(test_app) as client:
+            res = client.get("/health", headers={"Origin": "http://localhost:5173"})
+            assert res.status_code == 200
+            assert "access-control-allow-origin" not in res.headers
