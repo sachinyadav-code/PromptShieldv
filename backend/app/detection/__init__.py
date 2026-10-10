@@ -5,6 +5,8 @@ from app.detection.ingress import (
     IngressInspectionViews,
     IngressTransformationError,
     RULE_MALFORMED_ENCODING,
+    evaluate_ingress_prompt_ml,
+    evaluate_ingress_views_ml,
     generate_ingress_views,
     inspect_ingress_prompt,
 )
@@ -16,6 +18,8 @@ __all__ = [
     "IngressInspectionViews",
     "IngressTransformationError",
     "RULE_MALFORMED_ENCODING",
+    "evaluate_ingress_prompt_ml",
+    "evaluate_ingress_views_ml",
     "generate_ingress_views",
     "get_configured_rules",
     "inspect_ingress_prompt",

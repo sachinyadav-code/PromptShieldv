@@ -203,6 +203,57 @@ def generate_ingress_views(prompt: str) -> IngressInspectionViews:
     )
 
 
+def evaluate_ingress_views_ml(
+    views: IngressInspectionViews,
+    candidate_texts: Optional[List[str]] = None,
+    classifier: Optional[Any] = None,
+) -> MLAssessment:
+    """Evaluate ML classifier across ingress prompt views, selecting the highest risk assessment.
+
+    Evaluates the raw prompt view first, and then compares against all distinct transformed views
+    (normalized, decoded, combined, decoded_normalized). The assessment with the highest valid
+    risk score is returned, ensuring obfuscated injection attempts in any view are captured.
+    If an inference fails for a specific view, valid assessments are never overridden by unavailable ones.
+    """
+    if candidate_texts is None:
+        candidate_texts = [views.raw]
+        if views.normalized and views.normalized != views.raw:
+            candidate_texts.append(views.normalized)
+        if views.decoded and views.decoded != views.raw:
+            candidate_texts.append(views.decoded)
+        if views.combined_normalized_decoded and views.combined_normalized_decoded not in candidate_texts:
+            candidate_texts.append(views.combined_normalized_decoded)
+        if views.decoded_normalized and views.decoded_normalized not in candidate_texts:
+            candidate_texts.append(views.decoded_normalized)
+
+    best_ml_assessment = _evaluate_ml_view(views.raw, classifier=classifier)
+
+    for text_view in candidate_texts[1:]:
+        view_ml = _evaluate_ml_view(text_view, classifier=classifier)
+        if view_ml.available:
+            if not best_ml_assessment.available:
+                best_ml_assessment = view_ml
+            elif view_ml.score is not None and (best_ml_assessment.score is None or view_ml.score > best_ml_assessment.score):
+                best_ml_assessment = view_ml
+
+    return best_ml_assessment
+
+
+def evaluate_ingress_prompt_ml(
+    prompt: str,
+    classifier: Optional[Any] = None,
+) -> MLAssessment:
+    """Safely generate ingress views for a prompt and evaluate ML classifier across all views.
+
+    If an IngressTransformationError occurs, falls back gracefully to evaluating the raw prompt.
+    """
+    try:
+        views = generate_ingress_views(prompt)
+        return evaluate_ingress_views_ml(views, classifier=classifier)
+    except IngressTransformationError:
+        return _evaluate_ml_view(prompt, classifier=classifier)
+
+
 def inspect_ingress_prompt(prompt: str) -> IngressInspectionResult:
     """Inspect user prompt across raw, normalized, and decoded views.
 
@@ -232,17 +283,7 @@ def inspect_ingress_prompt(prompt: str) -> IngressInspectionResult:
     all_matched_rules = list(matched_dict.values())
 
     # 2. ML Classifier Assessment across all views
-    # Evaluate raw view first
-    best_ml_assessment = _evaluate_ml_view(views.raw)
-
-    # If raw ML is available, test normalized and decoded views to detect obfuscated injections
-    for text_view in candidate_texts[1:]:
-        view_ml = _evaluate_ml_view(text_view)
-        if view_ml.available:
-            if not best_ml_assessment.available:
-                best_ml_assessment = view_ml
-            elif view_ml.score is not None and (best_ml_assessment.score is None or view_ml.score > best_ml_assessment.score):
-                best_ml_assessment = view_ml
+    best_ml_assessment = evaluate_ingress_views_ml(views, candidate_texts=candidate_texts)
 
     return IngressInspectionResult(
         matched_rules=all_matched_rules,
@@ -252,17 +293,20 @@ def inspect_ingress_prompt(prompt: str) -> IngressInspectionResult:
     )
 
 
-def _evaluate_ml_view(text: str) -> MLAssessment:
+def _evaluate_ml_view(text: str, classifier: Optional[Any] = None) -> MLAssessment:
     """Evaluate ML classifier for a specific text view with resilient fallback."""
     try:
-        classifier = get_classifier()
-        inference_result = classifier.predict(text)
+        clf = classifier if classifier is not None else get_classifier()
+        inference_result = clf.predict(text)
+        if isinstance(inference_result, MLAssessment):
+            return inference_result
         return MLAssessment.from_inference_result(inference_result)
     except Exception as exc:
         logger.warning("ML assessment failed on view: %s", type(exc).__name__)
         fallback_threshold = 0.50
         try:
-            fallback_threshold = get_classifier().threshold
+            clf = classifier if classifier is not None else get_classifier()
+            fallback_threshold = clf.threshold
         except Exception:
             pass
         return MLAssessment.unavailable(

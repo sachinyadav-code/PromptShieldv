@@ -1380,3 +1380,232 @@ def test_phase3_stage6_end_to_end_security_scenarios(client, monkeypatch):
     assert d12["is_complete"] is True
     assert "downstream_response" not in d12
     assert get_mock_call_count() == calls_before
+
+
+# ---------------------------------------------------------------------------
+# 18. Phase 7 Stage 7.3: RAG Multi-View ML Alignment Security Tests
+# ---------------------------------------------------------------------------
+
+
+def test_rag_multiview_ml_catches_obfuscated_injection_query_in_block_on_threshold(client, monkeypatch):
+    """Obfuscated direct query with zero-width characters triggers ML block in block_on_threshold mode."""
+    from app.detection.ml_classifier import MLInferenceResult
+
+    set_ml_enforcement_mode("block_on_threshold")
+    calls_before = get_mock_call_count()
+
+    classifier = get_classifier()
+
+    # The classifier only scores the de-obfuscated injection as high risk; raw obfuscated text gets 0.05
+    def mock_predict(text: str) -> MLInferenceResult:
+        if "adversarial bypass payload" in text and "\u200b" not in text:
+            return MLInferenceResult(
+                available=True,
+                score=0.95,
+                threshold=0.50,
+                predicted_label="injection",
+                would_block=True,
+                model_version="v1",
+                error_code=None,
+            )
+        return MLInferenceResult(
+            available=True,
+            score=0.05,
+            threshold=0.50,
+            predicted_label="benign",
+            would_block=False,
+            model_version="v1",
+            error_code=None,
+        )
+
+    monkeypatch.setattr(classifier, "predict", mock_predict)
+
+    # Obfuscated query with zero-width characters inside keywords
+    obfuscated_query = "adv\u200bersarial by\u200bpass pay\u200bload"
+
+    # 1. Test /api/v1/rag/inspect
+    res_inspect = client.post("/api/v1/rag/inspect", json={"query": obfuscated_query, "top_k": 1})
+    assert res_inspect.status_code == 200
+    data_inspect = res_inspect.json()
+    assert data_inspect["decision"] == "BLOCK"
+    assert data_inspect["decision_source"] == "ml_enforcement"
+    assert data_inspect["risk_score"] == 0.95
+    assert data_inspect["ml_assessment"]["available"] is True
+    assert data_inspect["ml_assessment"]["would_block"] is True
+    assert data_inspect["ml_assessment"]["score"] == 0.95
+    assert get_mock_call_count() == calls_before
+
+    # 2. Test /api/v1/rag/proxy - must block and NEVER forward to mock downstream
+    res_proxy = client.post("/api/v1/rag/proxy", json={"query": obfuscated_query, "top_k": 1})
+    assert res_proxy.status_code == 200
+    data_proxy = res_proxy.json()
+    assert data_proxy["decision"] == "BLOCK"
+    assert data_proxy["decision_source"] == "ml_enforcement"
+    assert data_proxy["risk_score"] == 0.95
+    assert data_proxy["forwarded"] is False
+    assert data_proxy["downstream_response"] is None
+    assert get_mock_call_count() == calls_before
+
+    monkeypatch.undo()
+
+
+def test_rag_multiview_ml_catches_percent_encoded_query_in_block_on_threshold(client, monkeypatch):
+    """Percent-encoded direct query triggers ML block across views in block_on_threshold mode."""
+    from app.detection.ml_classifier import MLInferenceResult
+
+    set_ml_enforcement_mode("block_on_threshold")
+    calls_before = get_mock_call_count()
+
+    classifier = get_classifier()
+
+    def mock_predict(text: str) -> MLInferenceResult:
+        if "stealth attack prompt" in text and "%" not in text:
+            return MLInferenceResult(
+                available=True,
+                score=0.89,
+                threshold=0.50,
+                predicted_label="injection",
+                would_block=True,
+                model_version="v1",
+                error_code=None,
+            )
+        return MLInferenceResult(
+            available=True,
+            score=0.10,
+            threshold=0.50,
+            predicted_label="benign",
+            would_block=False,
+            model_version="v1",
+            error_code=None,
+        )
+
+    monkeypatch.setattr(classifier, "predict", mock_predict)
+
+    # %73%74%65%61%6c%74%68%20%61%74%74%61%63%6b%20%70%72%6f%6d%70%74 = "stealth attack prompt"
+    encoded_query = "%73%74%65%61%6c%74%68%20%61%74%74%61%63%6b%20%70%72%6f%6d%70%74"
+
+    res_proxy = client.post("/api/v1/rag/proxy", json={"query": encoded_query, "top_k": 1})
+    assert res_proxy.status_code == 200
+    data_proxy = res_proxy.json()
+    assert data_proxy["decision"] == "BLOCK"
+    assert data_proxy["decision_source"] == "ml_enforcement"
+    assert data_proxy["risk_score"] == 0.89
+    assert data_proxy["forwarded"] is False
+    assert data_proxy["downstream_response"] is None
+    assert get_mock_call_count() == calls_before
+
+    monkeypatch.undo()
+
+
+def test_rag_multiview_ml_catches_percent_encoded_query_in_inspect(client, monkeypatch):
+    """Percent-encoded direct query triggers ML block across views in /api/v1/rag/inspect."""
+    from app.detection.ml_classifier import MLInferenceResult
+
+    set_ml_enforcement_mode("block_on_threshold")
+    calls_before = get_mock_call_count()
+
+    classifier = get_classifier()
+
+    def mock_predict(text: str) -> MLInferenceResult:
+        if "stealth attack prompt" in text and "%" not in text:
+            return MLInferenceResult(
+                available=True,
+                score=0.89,
+                threshold=0.50,
+                predicted_label="injection",
+                would_block=True,
+                model_version="v1",
+                error_code=None,
+            )
+        return MLInferenceResult(
+            available=True,
+            score=0.10,
+            threshold=0.50,
+            predicted_label="benign",
+            would_block=False,
+            model_version="v1",
+            error_code=None,
+        )
+
+    monkeypatch.setattr(classifier, "predict", mock_predict)
+
+    # %73%74%65%61%6c%74%68%20%61%74%74%61%63%6b%20%70%72%6f%6d%70%74 = "stealth attack prompt"
+    encoded_query = "%73%74%65%61%6c%74%68%20%61%74%74%61%63%6b%20%70%72%6f%6d%70%74"
+
+    res_inspect = client.post("/api/v1/rag/inspect", json={"query": encoded_query, "top_k": 1})
+    assert res_inspect.status_code == 200
+    data_inspect = res_inspect.json()
+    assert data_inspect["decision"] == "BLOCK"
+    assert data_inspect["decision_source"] == "ml_enforcement"
+    assert data_inspect["risk_score"] == 0.89
+    assert data_inspect["ml_assessment"]["available"] is True
+    assert data_inspect["ml_assessment"]["would_block"] is True
+    assert data_inspect["ml_assessment"]["score"] == 0.89
+    assert "downstream_response" not in data_inspect
+    assert get_mock_call_count() == calls_before
+
+    monkeypatch.undo()
+
+
+def test_rag_multiview_ml_preserves_highest_valid_risk_without_overriding_with_unavailable(client, monkeypatch):
+    """If ML inference fails on one transformed view, a valid high-risk assessment is never overridden."""
+    from app.detection.ml_classifier import MLInferenceResult
+
+    set_ml_enforcement_mode("block_on_threshold")
+    calls_before = get_mock_call_count()
+
+    classifier = get_classifier()
+
+    # Fail on normalized view but succeed on raw view with 0.85
+    def mock_predict(text: str) -> MLInferenceResult:
+        if "\u200b" in text:
+            # Raw view contains zero-width spaces -> succeeds with high risk
+            return MLInferenceResult(
+                available=True,
+                score=0.85,
+                threshold=0.50,
+                predicted_label="injection",
+                would_block=True,
+                model_version="v1",
+                error_code=None,
+            )
+        # Normalized view raises error
+        raise RuntimeError("Inference worker crashed")
+
+    monkeypatch.setattr(classifier, "predict", mock_predict)
+
+    query = "malicious\u200b attempt"
+    res_proxy = client.post("/api/v1/rag/proxy", json={"query": query, "top_k": 1})
+    assert res_proxy.status_code == 200
+    data = res_proxy.json()
+    assert data["decision"] == "BLOCK"
+    assert data["decision_source"] == "ml_enforcement"
+    assert data["risk_score"] == 0.85
+    assert data["ml_assessment"]["available"] is True
+    assert data["ml_assessment"]["score"] == 0.85
+    assert data["forwarded"] is False
+    assert get_mock_call_count() == calls_before
+
+    monkeypatch.undo()
+
+
+def test_rag_malformed_encoding_in_query_triggers_fail_closed_block(client):
+    """Malformed percent-encoding in query triggers deterministic fail-closed block and never forwards."""
+    calls_before = get_mock_call_count()
+    malformed_query = "malformed query %FF_invalid"
+
+    res_inspect = client.post("/api/v1/rag/inspect", json={"query": malformed_query, "top_k": 1})
+    assert res_inspect.status_code == 200
+    data_inspect = res_inspect.json()
+    assert data_inspect["decision"] == "BLOCK"
+    assert data_inspect["decision_source"] == "deterministic_rule"
+    assert "RULE_MALFORMED_ENCODING" in data_inspect["matched_rules"]
+
+    res_proxy = client.post("/api/v1/rag/proxy", json={"query": malformed_query, "top_k": 1})
+    assert res_proxy.status_code == 200
+    data_proxy = res_proxy.json()
+    assert data_proxy["decision"] == "BLOCK"
+    assert data_proxy["decision_source"] == "deterministic_rule"
+    assert data_proxy["forwarded"] is False
+    assert data_proxy["downstream_response"] is None
+    assert get_mock_call_count() == calls_before

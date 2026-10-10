@@ -29,6 +29,7 @@ from app.limits import (
 from app.detection.ingress import (
     IngressTransformationError,
     RULE_MALFORMED_ENCODING,
+    evaluate_ingress_prompt_ml,
     inspect_ingress_prompt,
 )
 from app.detection.ml_classifier import get_classifier
@@ -581,8 +582,8 @@ def inspect_rag(payload: RAGRequest) -> RAGInspectResponse:
         )
         retrieved_docs = [r.document for r in retrieval_results]
 
-        # 3. Direct query ML assessment
-        ml_assessment = _get_ml_assessment(payload.query)
+        # 3. Direct query ML assessment across ingress views
+        ml_assessment = evaluate_ingress_prompt_ml(payload.query, classifier=get_classifier())
 
         # 4. Multi-level RAG security inspection
         report = inspect_rag_request(
@@ -762,8 +763,8 @@ def proxy_rag(payload: RAGRequest) -> RAGProxyResponse:
         )
         retrieved_docs = [r.document for r in retrieval_results]
 
-        # 3. Direct query ML assessment
-        ml_assessment = _get_ml_assessment(payload.query)
+        # 3. Direct query ML assessment across ingress views
+        ml_assessment = evaluate_ingress_prompt_ml(payload.query, classifier=get_classifier())
 
         # 4. Multi-level RAG security inspection
         report = inspect_rag_request(
