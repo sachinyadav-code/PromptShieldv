@@ -12,14 +12,14 @@ permissions:
 jobs:
   backend-tests:
     name: Backend tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.14"
           cache: pip
@@ -33,7 +33,7 @@ jobs:
 
   frontend-checks:
     name: Frontend lint and build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     defaults:
       run:
@@ -41,10 +41,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "22"
           cache: npm
@@ -61,14 +61,14 @@ jobs:
 
   container-build:
     name: Validate Compose and build images
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs:
       - backend-tests
       - frontend-checks
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Validate Docker Compose
         run: docker compose config --quiet
