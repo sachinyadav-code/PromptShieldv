@@ -1,0 +1,119 @@
+﻿# ==============================================================================
+# PromptShield Root .dockerignore
+# Patterns follow Go filepath.Match / Dockerfile .dockerignore syntax.
+# Leading '/' anchors to root; '**/' matches arbitrary directory depth.
+# ==============================================================================
+
+# Git metadata
+.git
+**/.git
+.gitignore
+.gitattributes
+
+# Virtual environments & Python runtimes
+.venv
+**/.venv
+venv
+**/venv
+env
+**/env
+ENV
+**/ENV
+
+# Python bytecode and caches
+__pycache__
+**/__pycache__
+*.py[cod]
+**/*.py[cod]
+*.class
+**/*.class
+*.so
+**/*.so
+
+# Node / frontend build dependencies and output
+node_modules
+**/node_modules
+dist
+**/dist
+dist-ssr
+**/dist-ssr
+.npm
+**/.npm
+*.tsbuildinfo
+**/*.tsbuildinfo
+
+# Local environment secrets and configuration
+.env
+**/.env
+.env.*
+**/.env.*
+*.env
+**/*.env
+*.env.*
+**/*.env.*
+!.env.example
+!**/.env.example
+
+# Local databases and SQLite journals / WAL / SHM files
+*.db
+**/*.db
+*.db-wal
+**/*.db-wal
+*.db-shm
+**/*.db-shm
+*.db-journal
+**/*.db-journal
+*.sqlite
+**/*.sqlite
+*.sqlite3
+**/*.sqlite3
+
+# Test, coverage, and analysis caches
+.pytest_cache
+**/.pytest_cache
+.coverage
+**/.coverage
+.coverage.*
+**/.coverage.*
+htmlcov
+**/htmlcov
+.cache
+**/.cache
+.tox
+**/.tox
+.nox
+**/.nox
+.hypothesis
+**/.hypothesis
+
+# Editor and OS metadata
+.vscode
+**/.vscode
+.idea
+**/.idea
+*.swp
+**/*.swp
+*.swo
+**/*.swo
+.DS_Store
+**/.DS_Store
+Thumbs.db
+**/Thumbs.db
+Desktop.ini
+**/Desktop.ini
+
+# Packaging and logs
+build
+**/build
+develop-eggs
+**/develop-eggs
+eggs
+**/eggs
+.eggs
+**/.eggs
+*.egg-info
+**/*.egg-info
+logs
+**/logs
+*.log
+**/*.log

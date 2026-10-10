@@ -1,0 +1,70 @@
+﻿# ==============================================================================
+# PromptShield Enterprise LLM Security Gateway - Docker Compose
+# ==============================================================================
+# Local development and full-stack execution orchestration.
+#
+# IMPORTANT OPERATIONAL INVARIANTS:
+# 1. API Keys: Supply authorized keys via PROMPTSHIELD_API_KEYS (e.g. in your
+#    local untracked .env file). If omitted or empty, backend authentication
+#    fails closed with HTTP 401 Unauthorized for all protected endpoints.
+# 2. Browser Networking vs Build-Time Configuration:
+#    The React dashboard code executes in the end-user's host web browser, NOT
+#    inside the Docker bridge network. The API base URL is baked into static assets
+#    at BUILD TIME via the build argument `VITE_API_BASE_URL`.
+#    If you override BACKEND_PORT (e.g., 9000), you MUST rebuild the frontend image
+#    with matching VITE_API_BASE_URL (http://127.0.0.1:9000) using `docker compose build`.
+# 3. CORS Consistency:
+#    PROMPTSHIELD_ALLOWED_ORIGINS must include the exact browser scheme, host, and port
+#    used to access the frontend (e.g., http://localhost:8080, http://127.0.0.1:8080).
+# 4. Persistent Audit Volume:
+#    'promptshield_audit_data' mounts to /data in the backend container to preserve
+#    audit events and SQLite WAL across container lifecycles.
+# ==============================================================================
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: promptshield-backend
+    restart: unless-stopped
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    environment:
+      PROMPTSHIELD_AUTH_ENABLED: "${PROMPTSHIELD_AUTH_ENABLED:-true}"
+      PROMPTSHIELD_API_KEYS: "${PROMPTSHIELD_API_KEYS:-}"
+      PROMPTSHIELD_ALLOWED_ORIGINS: "${PROMPTSHIELD_ALLOWED_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080,http://localhost:5173,http://127.0.0.1:5173}"
+      PROMPTSHIELD_RATE_LIMIT_ENABLED: "${PROMPTSHIELD_RATE_LIMIT_ENABLED:-true}"
+      PROMPTSHIELD_RATE_LIMIT_REQUESTS: "${PROMPTSHIELD_RATE_LIMIT_REQUESTS:-100}"
+      PROMPTSHIELD_RATE_LIMIT_WINDOW_SECONDS: "${PROMPTSHIELD_RATE_LIMIT_WINDOW_SECONDS:-60}"
+      PROMPTSHIELD_MAX_CONCURRENT_REQUESTS: "${PROMPTSHIELD_MAX_CONCURRENT_REQUESTS:-20}"
+      PROMPTSHIELD_ML_ENFORCEMENT_MODE: "${PROMPTSHIELD_ML_ENFORCEMENT_MODE:-observe}"
+      PROMPTSHIELD_AUDIT_DB_PATH: "/data/audit.db"
+    volumes:
+      - promptshield_audit_data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_API_BASE_URL: "${VITE_API_BASE_URL:-http://127.0.0.1:8000}"
+    container_name: promptshield-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-8080}:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  promptshield_audit_data:
+    driver: local
