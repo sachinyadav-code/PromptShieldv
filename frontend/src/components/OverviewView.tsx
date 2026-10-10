@@ -38,6 +38,16 @@ export const OverviewView: React.FC<OverviewViewProps> = ({
     }
 
     // 2. Fetch Audit Events Summary (limit: 100 for batch metrics)
+    if (!apiClient.hasApiKey()) {
+      setRecentEvents([]);
+      setBatchEvents([]);
+      setTotalEventsCount(0);
+      setAuditError('Admin API key is required to access audit telemetry. Click below to enter your key.');
+      setIsLoading(false);
+      setLastRefreshed(new Date());
+      return;
+    }
+
     try {
       const auditRes = await apiClient.getAuditEvents({ limit: 100, offset: 0 });
       setRecentEvents(auditRes.events.slice(0, 5));

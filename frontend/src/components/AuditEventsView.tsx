@@ -63,6 +63,14 @@ export const AuditEventsView: React.FC<AuditEventsViewProps> = ({
       }
     }
 
+    if (!apiClient.hasApiKey()) {
+      setEvents([]);
+      setTotalCount(0);
+      setApiError(new ApiError(401, 'Admin API key is required to access persistent audit logs. Please configure your API key in Settings.'));
+      setIsLoading(false);
+      return;
+    }
+
     try {
       const res = await apiClient.getAuditEvents(params);
       setEvents(res.events);

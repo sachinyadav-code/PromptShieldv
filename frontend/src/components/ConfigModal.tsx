@@ -31,13 +31,28 @@ export const ConfigModal: React.FC<ConfigModalProps> = ({
   const handleTestConnection = async () => {
     setTestStatus({ loading: true });
     try {
-      const testClient = new PromptShieldApiClient(urlInput, keyInput);
+      const trimmedUrl = urlInput.trim();
+      const trimmedKey = keyInput.trim();
+      const testClient = new PromptShieldApiClient(trimmedUrl, trimmedKey);
+
+      // 1. Verify general gateway health
       const health = await testClient.getHealth();
-      setTestStatus({
-        loading: false,
-        success: true,
-        message: `Connected successfully! Service: ${health.service} (Phase ${health.phase}, status: ${health.status})`,
-      });
+
+      // 2. If an API key is entered, test authentication against protected rules endpoint
+      if (trimmedKey) {
+        await testClient.getRules();
+        setTestStatus({
+          loading: false,
+          success: true,
+          message: `Connected & authenticated successfully! Service: ${health.service} (Phase ${health.phase}, status: ${health.status}). API key validated.`,
+        });
+      } else {
+        setTestStatus({
+          loading: false,
+          success: true,
+          message: `Connected successfully! Service: ${health.service} (Phase ${health.phase}, status: ${health.status}). Note: No API key provided; protected endpoints will require an API key.`,
+        });
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Unknown connection error';
       setTestStatus({
@@ -130,7 +145,7 @@ export const ConfigModal: React.FC<ConfigModalProps> = ({
               onClick={handleTestConnection}
               disabled={testStatus.loading}
             >
-              {testStatus.loading ? 'Testing...' : 'Test Health Endpoint'}
+              {testStatus.loading ? 'Testing...' : 'Test Connection & Auth'}
             </button>
             {testStatus.message && (
               <div

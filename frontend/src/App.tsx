@@ -101,14 +101,16 @@ export const App: React.FC = () => {
         </div>
       </footer>
 
-      <ConfigModal
-        isOpen={isConfigOpen}
-        onClose={() => setIsConfigOpen(false)}
-        baseUrl={baseUrl}
-        apiKey={apiKey}
-        onSave={handleSaveConfig}
-        apiClient={apiClient}
-      />
+      {isConfigOpen && (
+        <ConfigModal
+          isOpen={isConfigOpen}
+          onClose={() => setIsConfigOpen(false)}
+          baseUrl={baseUrl}
+          apiKey={apiKey}
+          onSave={handleSaveConfig}
+          apiClient={apiClient}
+        />
+      )}
     </div>
   );
 };
