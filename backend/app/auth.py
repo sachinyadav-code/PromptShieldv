@@ -146,6 +146,8 @@ def get_allowed_origins() -> list[str]:
 
     Defaults to local development frontend origins:
     http://localhost:5173, http://127.0.0.1:5173.
+    Strips surrounding whitespace, quotes, and trailing slashes so cloud
+    environment definitions (e.g. Render, Docker) match Starlette Origin headers exactly.
     """
     raw = os.getenv(ENV_ALLOWED_ORIGINS)
     if raw is None:
@@ -153,5 +155,9 @@ def get_allowed_origins() -> list[str]:
     raw = raw.strip()
     if not raw:
         return []
-    origins = [o.strip() for o in raw.split(",") if o.strip()]
+    origins: list[str] = []
+    for item in raw.split(","):
+        cleaned = item.strip().strip("\"'").rstrip("/")
+        if cleaned:
+            origins.append(cleaned)
     return origins

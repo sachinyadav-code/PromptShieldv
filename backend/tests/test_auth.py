@@ -250,3 +250,47 @@ class TestHttpSecurityHeadersAndCORS:
             res = client.get("/health", headers={"Origin": "http://localhost:5173"})
             assert res.status_code == 200
             assert "access-control-allow-origin" not in res.headers
+
+    def test_cors_production_vercel_frontend_origin(self, monkeypatch):
+        """Verify production frontend origin https://promptshieldv-frontend.vercel.app
+
+        (including when defined with trailing slashes or quotes in deployment env)
+        successfully receives Access-Control-Allow-Origin on /health and succeeds on OPTIONS preflight.
+        """
+        vercel_origin = "https://promptshieldv-frontend.vercel.app"
+        # Test with trailing slash in env var (common dashboard config oversight)
+        monkeypatch.setenv(ENV_ALLOWED_ORIGINS, f"{vercel_origin}/,http://localhost:5173")
+        monkeypatch.setenv(ENV_API_KEYS, TEST_PRIMARY_KEY)
+        from app.main import app as test_app
+
+        with TestClient(test_app) as client:
+            # 1. GET /health with Vercel origin includes Access-Control-Allow-Origin
+            res_health = client.get("/health", headers={"Origin": vercel_origin})
+            assert res_health.status_code == 200
+            assert res_health.headers.get("access-control-allow-origin") == vercel_origin
+
+            # 2. OPTIONS preflight to /api/v1/audit/events succeeds (HTTP 200) with required headers
+            res_preflight = client.options(
+                "/api/v1/audit/events?limit=100&offset=0",
+                headers={
+                    "Origin": vercel_origin,
+                    "Access-Control-Request-Method": "GET",
+                    "Access-Control-Request-Headers": "authorization,content-type",
+                },
+            )
+            assert res_preflight.status_code == 200
+            assert res_preflight.headers.get("access-control-allow-origin") == vercel_origin
+            assert "Authorization" in res_preflight.headers.get("access-control-allow-headers", "")
+            assert "Content-Type" in res_preflight.headers.get("access-control-allow-headers", "")
+
+            # 3. Disallowed origin is rejected (no allow header, 400 on preflight)
+            res_evil = client.options(
+                "/api/v1/audit/events?limit=100&offset=0",
+                headers={
+                    "Origin": "https://malicious-site.example.com",
+                    "Access-Control-Request-Method": "GET",
+                    "Access-Control-Request-Headers": "authorization",
+                },
+            )
+            assert "access-control-allow-origin" not in res_evil.headers
+            assert res_evil.status_code == 400

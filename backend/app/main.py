@@ -87,7 +87,8 @@ async def lifespan(app: FastAPI):
         logger.error("Failed to initialize audit database on startup: %s", type(e).__name__)
         raise RuntimeError("Audit storage initialization failed on startup.") from e
 
-    logger.info("PromptShield Gateway initialized with ML enforcement mode: %s", mode)
+    origins = get_allowed_origins()
+    logger.info("PromptShield Gateway initialized with ML enforcement mode: %s; CORS allowed origins: %s", mode, origins)
     yield
     logger.info("Shutting down PromptShield Gateway...")
 
