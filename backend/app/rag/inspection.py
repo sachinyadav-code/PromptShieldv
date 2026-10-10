@@ -22,6 +22,11 @@ import logging
 import re
 from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence, Set, Tuple
 
+from app.detection.ingress import (
+    IngressTransformationError,
+    RULE_MALFORMED_ENCODING,
+    generate_ingress_views,
+)
 from app.detection.rules import CONFIGURED_RULES, DetectionRule
 from app.rag.corpus import Document
 
@@ -404,17 +409,60 @@ def inspect_direct_query(query: str) -> InspectionResult:
             explanation="Empty or whitespace query evaluated safely",
         )
 
+    # Multi-view ingress defense: evaluate raw, normalized, and decoded views
+    try:
+        views = generate_ingress_views(query)
+        candidate_texts = [views.raw]
+        if views.normalized and views.normalized != views.raw:
+            candidate_texts.append(views.normalized)
+        if views.decoded and views.decoded != views.raw:
+            candidate_texts.append(views.decoded)
+        if views.combined_normalized_decoded and views.combined_normalized_decoded not in candidate_texts:
+            candidate_texts.append(views.combined_normalized_decoded)
+        if views.decoded_normalized and views.decoded_normalized not in candidate_texts:
+            candidate_texts.append(views.decoded_normalized)
+    except IngressTransformationError:
+        malformed_finding = InspectionFinding(
+            scope="direct_query",
+            assessment="BLOCK",
+            rule_id=RULE_MALFORMED_ENCODING.rule_id,
+            doc_id=None,
+            source=None,
+            chunk_index=None,
+            char_start=0,
+            char_end=len(query),
+            detection_source="deterministic_rule",
+            risk_score=RULE_MALFORMED_ENCODING.risk_weight,
+            explanation="Direct query blocked by rule: RULE_MALFORMED_ENCODING",
+        )
+        return InspectionResult(
+            scope="direct_query",
+            assessment="BLOCK",
+            risk_score=RULE_MALFORMED_ENCODING.risk_weight,
+            matched_rule_ids=(RULE_MALFORMED_ENCODING.rule_id,),
+            findings=(malformed_finding,),
+            inspected_items_count=1,
+            is_complete=True,
+            explanation="Direct query blocked by rule(s): RULE_MALFORMED_ENCODING",
+        )
+
     # For direct queries, educational override does not apply (user prompt must not contain attacks)
-    findings = _scan_text_for_rules(
-        text=query,
-        scope="direct_query",
-        doc_id=None,
-        source=None,
-        chunk_index=None,
-        base_offset=0,
-        check_privilege=True,
-        allow_educational_override=False,
-    )
+    findings_dict = {}
+    for text_view in candidate_texts:
+        for f in _scan_text_for_rules(
+            text=text_view,
+            scope="direct_query",
+            doc_id=None,
+            source=None,
+            chunk_index=None,
+            base_offset=0,
+            check_privilege=True,
+            allow_educational_override=False,
+        ):
+            if f.rule_id not in findings_dict:
+                findings_dict[f.rule_id] = f
+
+    findings = list(findings_dict.values())
 
     has_block = any(f.assessment == "BLOCK" for f in findings)
     max_risk = max((f.risk_score for f in findings), default=0.0)

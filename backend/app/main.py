@@ -26,6 +26,11 @@ from app.limits import (
     enforce_rate_limit,
     validate_limits_configuration,
 )
+from app.detection.ingress import (
+    IngressTransformationError,
+    RULE_MALFORMED_ENCODING,
+    inspect_ingress_prompt,
+)
 from app.detection.ml_classifier import get_classifier
 from app.detection.rules import get_configured_rules, scan_prompt
 from app.output import enforce_output_security
@@ -282,8 +287,23 @@ def inspect_prompt(payload: PromptRequest) -> InspectResponse:
     """
     server_request_id = str(uuid.uuid4())
     matched_rules = scan_prompt(payload.prompt)
-    ml_assessment = _get_ml_assessment(payload.prompt)
-    decision = evaluate_policy(matched_rules, ml_assessment=ml_assessment)
+
+    try:
+        ingress_result = inspect_ingress_prompt(payload.prompt)
+        matched_dict = {r.rule_id: r for r in matched_rules}
+        for r in ingress_result.matched_rules:
+            if r.rule_id not in matched_dict:
+                matched_dict[r.rule_id] = r
+        all_matched = list(matched_dict.values())
+        ml_assessment = ingress_result.ml_assessment
+        decision = evaluate_policy(all_matched, ml_assessment=ml_assessment)
+    except IngressTransformationError as err:
+        logger.warning("Ingress transformation error on /api/v1/inspect: %s (%s)", err.error_code, err.detail)
+        matched_dict = {r.rule_id: r for r in matched_rules}
+        matched_dict[RULE_MALFORMED_ENCODING.rule_id] = RULE_MALFORMED_ENCODING
+        all_matched = list(matched_dict.values())
+        ml_assessment = _get_ml_assessment(payload.prompt)
+        decision = evaluate_policy(all_matched, ml_assessment=ml_assessment)
 
     log_security_event(
         request_id=server_request_id,
@@ -327,8 +347,23 @@ def proxy_prompt(payload: PromptRequest) -> ProxyResponse:
     """
     server_request_id = str(uuid.uuid4())
     matched_rules = scan_prompt(payload.prompt)
-    ml_assessment = _get_ml_assessment(payload.prompt)
-    decision = evaluate_policy(matched_rules, ml_assessment=ml_assessment)
+
+    try:
+        ingress_result = inspect_ingress_prompt(payload.prompt)
+        matched_dict = {r.rule_id: r for r in matched_rules}
+        for r in ingress_result.matched_rules:
+            if r.rule_id not in matched_dict:
+                matched_dict[r.rule_id] = r
+        all_matched = list(matched_dict.values())
+        ml_assessment = ingress_result.ml_assessment
+        decision = evaluate_policy(all_matched, ml_assessment=ml_assessment)
+    except IngressTransformationError as err:
+        logger.warning("Ingress transformation error on /api/v1/proxy: %s (%s)", err.error_code, err.detail)
+        matched_dict = {r.rule_id: r for r in matched_rules}
+        matched_dict[RULE_MALFORMED_ENCODING.rule_id] = RULE_MALFORMED_ENCODING
+        all_matched = list(matched_dict.values())
+        ml_assessment = _get_ml_assessment(payload.prompt)
+        decision = evaluate_policy(all_matched, ml_assessment=ml_assessment)
 
     downstream_result = None
     forwarded = False
