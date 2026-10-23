@@ -374,6 +374,95 @@ def log_output_security_event(
     return event
 
 
+def log_tool_security_event(
+    request_id: str,
+    endpoint: str,
+    event_type: str,
+    tool_name: str,
+    decision: str,
+    client_request_id: Optional[str] = None,
+    error_code: Optional[str] = None,
+    argument_keys: Optional[List[str]] = None,
+    argument_count: int = 0,
+    argument_sha256: Optional[str] = None,
+    output_status: Optional[str] = None,
+    output_findings_count: Optional[int] = None,
+    output_matched_rule_ids: Optional[List[str]] = None,
+    output_error_code: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Record a dedicated structured security audit event for tool operations.
+
+    IMPORTANT PRIVACY INVARIANTS:
+    Never logs raw tool arguments, raw tool results, credentials, or secrets.
+    Logs sanitized tool names, argument keys, argument counts, argument SHA-256 fingerprint,
+    and output security audit metrics.
+    """
+    sanitized_req_id = sanitize_audit_id(request_id, max_length=128, fallback="unknown_req")
+    sanitized_client_req_id = (
+        sanitize_audit_id(client_request_id, max_length=128, fallback="unknown_client")
+        if client_request_id is not None
+        else None
+    )
+    sanitized_endpoint = CONTROL_CHARS_PATTERN.sub("", str(endpoint))[:64] or "/unknown"
+    sanitized_tool_name = sanitize_audit_id(tool_name, max_length=64, fallback="unknown_tool")
+    sanitized_decision = sanitize_audit_id(decision, max_length=32, fallback="UNKNOWN")
+    sanitized_error_code = (
+        sanitize_audit_id(error_code, max_length=64, fallback="unknown_error")
+        if error_code is not None
+        else None
+    )
+    sanitized_arg_keys = [
+        sanitize_audit_id(k, max_length=64, fallback="arg")
+        for k in (argument_keys or [])
+    ][:50]
+    sanitized_arg_sha256 = (
+        sanitize_audit_id(argument_sha256, max_length=64, fallback="")
+        if argument_sha256
+        else None
+    )
+
+    event = {
+        "event_id": f"{sanitized_req_id}_{event_type}",
+        "event_type": sanitize_audit_id(event_type, max_length=32, fallback="tool_operation"),
+        "request_id": sanitized_req_id,
+        "client_request_id": sanitized_client_req_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "endpoint": sanitized_endpoint,
+        "decision": sanitized_decision,
+        "decision_source": "tool_guard",
+        "tool_name": sanitized_tool_name,
+        "argument_keys": sanitized_arg_keys,
+        "argument_count": max(0, int(argument_count)),
+        "argument_sha256": sanitized_arg_sha256,
+        "error_code": sanitized_error_code,
+    }
+
+    if output_status is not None:
+        event["output_status"] = sanitize_audit_id(output_status, max_length=32, fallback="UNKNOWN")
+        event["output_findings_count"] = max(0, int(output_findings_count or 0))
+        event["output_matched_rule_ids"] = [
+            sanitize_audit_id(r, max_length=64, fallback="unknown_rule")
+            for r in (output_matched_rule_ids or [])
+        ][:100]
+        event["output_error_code"] = (
+            sanitize_audit_id(output_error_code, max_length=64, fallback="unknown_error")
+            if output_error_code is not None
+            else None
+        )
+
+    with _audit_lock:
+        if len(_audit_events) >= MAX_AUDIT_EVENTS:
+            _audit_events.pop(0)
+        _audit_events.append(copy.deepcopy(event))
+
+    # Persist to durable storage (fails closed if storage raises AuditStorageError)
+    store = get_audit_store()
+    store.save_event(event)
+
+    logger.info(json.dumps(event))
+    return event
+
+
 def get_audit_events() -> List[Dict[str, Any]]:
     """Return an isolated deep copy of all recorded audit events (used by tests and debugging)."""
     with _audit_lock:

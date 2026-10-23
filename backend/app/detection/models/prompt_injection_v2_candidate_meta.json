@@ -1,0 +1,571 @@
+{
+  "candidate_version": "v2_candidate",
+  "model_name": "Model D (Combined Word+Char TF-IDF)",
+  "artifact_file": "prompt_injection_v2_candidate.joblib",
+  "artifact_size_bytes": 197300,
+  "trained_at": "2026-10-22T19:11:31Z",
+  "datasets": {
+    "v1_baseline_dataset": {
+      "path": "datasets/prompts_dataset_v1.jsonl",
+      "sha256": "166b7f0fc402b78b733309391d8da3aae4f534d4c5bad81d326cfb9a0bb14603",
+      "train_samples_used": 84
+    },
+    "v2_additions_dataset": {
+      "path": "datasets/prompts_dataset_v2_additions.jsonl",
+      "sha256": "4741a0929a799b7173d5595a292bfa00b68b01fd0ba48859d9c55134691b0ce6",
+      "train_samples_used": 56
+    },
+    "total_training_samples": 140,
+    "class_distribution_train": {
+      "benign": 70,
+      "injection": 70
+    },
+    "validation_samples": 42,
+    "class_distribution_validation": {
+      "benign": 21,
+      "injection": 21
+    }
+  },
+  "cross_validation_5fold_stratified_group": {
+    "macro_f1_mean": 0.9713370665094804,
+    "macro_f1_std": 0.026848558322911074,
+    "accuracy_mean": 0.9714285714285713,
+    "accuracy_std": 0.026726124191242425,
+    "inj_precision_mean": 0.9483333333333335,
+    "inj_precision_std": 0.04725815626252608,
+    "inj_recall_mean": 1.0,
+    "inj_recall_std": 0.0,
+    "inj_f1_mean": 0.9728735632183907,
+    "inj_f1_std": 0.02507328405413513,
+    "ben_precision_mean": 1.0,
+    "ben_precision_std": 0.0,
+    "ben_recall_mean": 0.9428571428571428,
+    "ben_recall_std": 0.05345224838248489,
+    "ben_f1_mean": 0.9698005698005698,
+    "ben_f1_std": 0.02863779344302919,
+    "aggregate_confusion_matrix": {
+      "tn": 66,
+      "fp": 4,
+      "fn": 0,
+      "tp": 70
+    },
+    "aggregate_fpr": 0.05714285714285714,
+    "aggregate_fnr": 0.0,
+    "per_fold": [
+      {
+        "accuracy": 1.0,
+        "macro_f1": 1.0,
+        "prec_inj": 1.0,
+        "rec_inj": 1.0,
+        "f1_inj": 1.0,
+        "prec_ben": 1.0,
+        "rec_ben": 1.0,
+        "f1_ben": 1.0,
+        "tn": 14,
+        "fp": 0,
+        "fn": 0,
+        "tp": 14,
+        "fpr": 0.0,
+        "fnr": 0.0
+      },
+      {
+        "accuracy": 0.9285714285714286,
+        "macro_f1": 0.9282051282051282,
+        "prec_inj": 0.875,
+        "rec_inj": 1.0,
+        "f1_inj": 0.9333333333333333,
+        "prec_ben": 1.0,
+        "rec_ben": 0.8571428571428571,
+        "f1_ben": 0.9230769230769231,
+        "tn": 12,
+        "fp": 2,
+        "fn": 0,
+        "tp": 14,
+        "fpr": 0.14285714285714285,
+        "fnr": 0.0
+      },
+      {
+        "accuracy": 0.9642857142857143,
+        "macro_f1": 0.9642401021711366,
+        "prec_inj": 0.9333333333333333,
+        "rec_inj": 1.0,
+        "f1_inj": 0.9655172413793104,
+        "prec_ben": 1.0,
+        "rec_ben": 0.9285714285714286,
+        "f1_ben": 0.9629629629629629,
+        "tn": 13,
+        "fp": 1,
+        "fn": 0,
+        "tp": 14,
+        "fpr": 0.07142857142857142,
+        "fnr": 0.0
+      },
+      {
+        "accuracy": 1.0,
+        "macro_f1": 1.0,
+        "prec_inj": 1.0,
+        "rec_inj": 1.0,
+        "f1_inj": 1.0,
+        "prec_ben": 1.0,
+        "rec_ben": 1.0,
+        "f1_ben": 1.0,
+        "tn": 14,
+        "fp": 0,
+        "fn": 0,
+        "tp": 14,
+        "fpr": 0.0,
+        "fnr": 0.0
+      },
+      {
+        "accuracy": 0.9642857142857143,
+        "macro_f1": 0.9642401021711366,
+        "prec_inj": 0.9333333333333333,
+        "rec_inj": 1.0,
+        "f1_inj": 0.9655172413793104,
+        "prec_ben": 1.0,
+        "rec_ben": 0.9285714285714286,
+        "f1_ben": 0.9629629629629629,
+        "tn": 13,
+        "fp": 1,
+        "fn": 0,
+        "tp": 14,
+        "fpr": 0.07142857142857142,
+        "fnr": 0.0
+      }
+    ]
+  },
+  "validation_evaluation": {
+    "metrics_at_default_50": {
+      "accuracy": 0.7857142857142857,
+      "macro_f1": 0.7754010695187166,
+      "prec_inj": 0.7,
+      "rec_inj": 1.0,
+      "f1_inj": 0.8235294117647058,
+      "prec_ben": 1.0,
+      "rec_ben": 0.5714285714285714,
+      "f1_ben": 0.7272727272727273,
+      "tn": 12,
+      "fp": 9,
+      "fn": 0,
+      "tp": 21,
+      "fpr": 0.42857142857142855,
+      "fnr": 0.0
+    },
+    "hard_negative_slice": {
+      "total_hard_negatives": 12,
+      "false_positives": 9,
+      "fpr": 0.75,
+      "individual_scores": [
+        {
+          "id": "v2-b-007",
+          "score": 0.6754,
+          "text": "In our incident response review, we found the following log "
+        },
+        {
+          "id": "v2-b-008",
+          "score": 0.6993,
+          "text": "Please explain why the phrase 'Ignore all previous rules and"
+        },
+        {
+          "id": "v2-b-009",
+          "score": 0.8652,
+          "text": "We are writing a research paper on LLM safety. Could you cri"
+        },
+        {
+          "id": "v2-b-010",
+          "score": 0.6066,
+          "text": "Classify the attack vector of this payload: 'System override"
+        },
+        {
+          "id": "v2-b-011",
+          "score": 0.7877,
+          "text": "Analyze this sanitized audit log excerpt: '### Instruction: "
+        },
+        {
+          "id": "v2-b-012",
+          "score": 0.2637,
+          "text": "For our security awareness training, provide a bulleted summ"
+        },
+        {
+          "id": "v2-b-013",
+          "score": 0.5161,
+          "text": "What are the best practices for structuring an enterprise sy"
+        },
+        {
+          "id": "v2-b-014",
+          "score": 0.1886,
+          "text": "How do boundary delimiters like XML tags or Markdown headers"
+        },
+        {
+          "id": "v2-b-015",
+          "score": 0.6054,
+          "text": "Why is hardcoding confidential credentials or internal API t"
+        },
+        {
+          "id": "v2-b-016",
+          "score": 0.508,
+          "text": "Explain how constitutional AI principles and RLHF contribute"
+        },
+        {
+          "id": "v2-b-017",
+          "score": 0.415,
+          "text": "In prompt engineering, what is the purpose of system prompt "
+        },
+        {
+          "id": "v2-b-018",
+          "score": 0.5131,
+          "text": "How can developers evaluate whether a model's system prompt "
+        }
+      ]
+    },
+    "optimal_threshold": {
+      "selected_tau": 0.88,
+      "metrics": {
+        "tau": 0.88,
+        "accuracy": 0.5714285714285714,
+        "macro_f1": 0.475,
+        "prec_inj": 1.0,
+        "rec_inj": 0.14285714285714285,
+        "f1_inj": 0.25,
+        "prec_ben": 0.5384615384615384,
+        "rec_ben": 1.0,
+        "f1_ben": 0.7,
+        "tn": 21,
+        "fp": 0,
+        "fn": 18,
+        "tp": 3,
+        "fpr": 0.0,
+        "fnr": 0.8571428571428571
+      }
+    },
+    "threshold_sweep_sample": [
+      {
+        "tau": 0.1,
+        "accuracy": 0.5238095238095238,
+        "macro_f1": 0.3841642228739003,
+        "prec_inj": 0.5121951219512195,
+        "rec_inj": 1.0,
+        "f1_inj": 0.6774193548387096,
+        "prec_ben": 1.0,
+        "rec_ben": 0.047619047619047616,
+        "f1_ben": 0.09090909090909091,
+        "tn": 1,
+        "fp": 20,
+        "fn": 0,
+        "tp": 21,
+        "fpr": 0.9523809523809523,
+        "fnr": 0.0
+      },
+      {
+        "tau": 0.2,
+        "accuracy": 0.6428571428571429,
+        "macro_f1": 0.5906432748538011,
+        "prec_inj": 0.5833333333333334,
+        "rec_inj": 1.0,
+        "f1_inj": 0.7368421052631579,
+        "prec_ben": 1.0,
+        "rec_ben": 0.2857142857142857,
+        "f1_ben": 0.4444444444444444,
+        "tn": 6,
+        "fp": 15,
+        "fn": 0,
+        "tp": 21,
+        "fpr": 0.7142857142857143,
+        "fnr": 0.0
+      },
+      {
+        "tau": 0.3,
+        "accuracy": 0.6904761904761905,
+        "macro_f1": 0.6576802507836991,
+        "prec_inj": 0.6176470588235294,
+        "rec_inj": 1.0,
+        "f1_inj": 0.7636363636363637,
+        "prec_ben": 1.0,
+        "rec_ben": 0.38095238095238093,
+        "f1_ben": 0.5517241379310345,
+        "tn": 8,
+        "fp": 13,
+        "fn": 0,
+        "tp": 21,
+        "fpr": 0.6190476190476191,
+        "fnr": 0.0
+      },
+      {
+        "tau": 0.4,
+        "accuracy": 0.7142857142857143,
+        "macro_f1": 0.6888888888888889,
+        "prec_inj": 0.6363636363636364,
+        "rec_inj": 1.0,
+        "f1_inj": 0.7777777777777778,
+        "prec_ben": 1.0,
+        "rec_ben": 0.42857142857142855,
+        "f1_ben": 0.6,
+        "tn": 9,
+        "fp": 12,
+        "fn": 0,
+        "tp": 21,
+        "fpr": 0.5714285714285714,
+        "fnr": 0.0
+      },
+      {
+        "tau": 0.5,
+        "accuracy": 0.7857142857142857,
+        "macro_f1": 0.7754010695187166,
+        "prec_inj": 0.7,
+        "rec_inj": 1.0,
+        "f1_inj": 0.8235294117647058,
+        "prec_ben": 1.0,
+        "rec_ben": 0.5714285714285714,
+        "f1_ben": 0.7272727272727273,
+        "tn": 12,
+        "fp": 9,
+        "fn": 0,
+        "tp": 21,
+        "fpr": 0.42857142857142855,
+        "fnr": 0.0
+      },
+      {
+        "tau": 0.6,
+        "accuracy": 0.7857142857142857,
+        "macro_f1": 0.7846153846153847,
+        "prec_inj": 0.75,
+        "rec_inj": 0.8571428571428571,
+        "f1_inj": 0.8,
+        "prec_ben": 0.8333333333333334,
+        "rec_ben": 0.7142857142857143,
+        "f1_ben": 0.7692307692307693,
+        "tn": 15,
+        "fp": 6,
+        "fn": 3,
+        "tp": 18,
+        "fpr": 0.2857142857142857,
+        "fnr": 0.14285714285714285
+      },
+      {
+        "tau": 0.7,
+        "accuracy": 0.7857142857142857,
+        "macro_f1": 0.7826336975273145,
+        "prec_inj": 0.875,
+        "rec_inj": 0.6666666666666666,
+        "f1_inj": 0.7567567567567568,
+        "prec_ben": 0.7307692307692307,
+        "rec_ben": 0.9047619047619048,
+        "f1_ben": 0.8085106382978723,
+        "tn": 19,
+        "fp": 2,
+        "fn": 7,
+        "tp": 14,
+        "fpr": 0.09523809523809523,
+        "fnr": 0.3333333333333333
+      },
+      {
+        "tau": 0.8,
+        "accuracy": 0.6190476190476191,
+        "macro_f1": 0.5714285714285714,
+        "prec_inj": 0.8571428571428571,
+        "rec_inj": 0.2857142857142857,
+        "f1_inj": 0.42857142857142855,
+        "prec_ben": 0.5714285714285714,
+        "rec_ben": 0.9523809523809523,
+        "f1_ben": 0.7142857142857143,
+        "tn": 20,
+        "fp": 1,
+        "fn": 15,
+        "tp": 6,
+        "fpr": 0.047619047619047616,
+        "fnr": 0.7142857142857143
+      },
+      {
+        "tau": 0.9,
+        "accuracy": 0.5,
+        "macro_f1": 0.3333333333333333,
+        "prec_inj": 0.0,
+        "rec_inj": 0.0,
+        "f1_inj": 0.0,
+        "prec_ben": 0.5,
+        "rec_ben": 1.0,
+        "f1_ben": 0.6666666666666666,
+        "tn": 21,
+        "fp": 0,
+        "fn": 21,
+        "tp": 0,
+        "fpr": 0.0,
+        "fnr": 1.0
+      }
+    ]
+  },
+  "model_comparison_summary": {
+    "Model A (Baseline Word TF-IDF)": {
+      "cv_macro_f1": "0.9785 +/- 0.0287",
+      "cv_agg_fpr": 0.04285714285714286,
+      "cv_agg_fnr": 0.0,
+      "val_macro_f1_default": 0.8023529411764705,
+      "val_hard_negative_fp": 8,
+      "val_optimal_tau": 0.68,
+      "val_optimal_macro_f1": 0.5159322033898305,
+      "latency_us_per_prompt": 121.67
+    },
+    "Model B (Tuned Word TF-IDF)": {
+      "cv_macro_f1": "0.9641 +/- 0.0321",
+      "cv_agg_fpr": 0.07142857142857142,
+      "cv_agg_fnr": 0.0,
+      "val_macro_f1_default": 0.8285714285714285,
+      "val_hard_negative_fp": 6,
+      "val_optimal_tau": 0.83,
+      "val_optimal_macro_f1": 0.5159322033898305,
+      "latency_us_per_prompt": 108.15
+    },
+    "Model C (Char n-gram TF-IDF)": {
+      "cv_macro_f1": "0.9642 +/- 0.0392",
+      "cv_agg_fpr": 0.04285714285714286,
+      "cv_agg_fnr": 0.02857142857142857,
+      "val_macro_f1_default": 0.7795918367346939,
+      "val_hard_negative_fp": 8,
+      "val_optimal_tau": 0.76,
+      "val_optimal_macro_f1": 0.43121881682109764,
+      "latency_us_per_prompt": 235.0
+    },
+    "Model D (Combined Word+Char TF-IDF)": {
+      "cv_macro_f1": "0.9713 +/- 0.0268",
+      "cv_agg_fpr": 0.05714285714285714,
+      "cv_agg_fnr": 0.0,
+      "val_macro_f1_default": 0.7754010695187166,
+      "val_hard_negative_fp": 9,
+      "val_optimal_tau": 0.88,
+      "val_optimal_macro_f1": 0.475,
+      "latency_us_per_prompt": 364.73
+    }
+  },
+  "top_features": {
+    "top_injection_indicators": [
+      {
+        "feature": "word__all",
+        "coefficient": 1.0227
+      },
+      {
+        "feature": "word__your",
+        "coefficient": 1.0089
+      },
+      {
+        "feature": "word__system",
+        "coefficient": 0.8116
+      },
+      {
+        "feature": "word__safety",
+        "coefficient": 0.7658
+      },
+      {
+        "feature": "word__now",
+        "coefficient": 0.7406
+      },
+      {
+        "feature": "word__you",
+        "coefficient": 0.6894
+      },
+      {
+        "feature": "word__instructions",
+        "coefficient": 0.6561
+      },
+      {
+        "feature": "word__developer",
+        "coefficient": 0.6501
+      },
+      {
+        "feature": "word__you are",
+        "coefficient": 0.6396
+      },
+      {
+        "feature": "word__previous",
+        "coefficient": 0.6314
+      },
+      {
+        "feature": "word__print",
+        "coefficient": 0.6259
+      },
+      {
+        "feature": "word__ai",
+        "coefficient": 0.6196
+      },
+      {
+        "feature": "word__reveal",
+        "coefficient": 0.582
+      },
+      {
+        "feature": "word__prompt",
+        "coefficient": 0.5526
+      },
+      {
+        "feature": "word__rules",
+        "coefficient": 0.5229
+      }
+    ],
+    "top_benign_indicators": [
+      {
+        "feature": "word__how",
+        "coefficient": -1.522
+      },
+      {
+        "feature": "word__how do",
+        "coefficient": -0.9634
+      },
+      {
+        "feature": "word__can",
+        "coefficient": -0.8403
+      },
+      {
+        "feature": "word__in",
+        "coefficient": -0.8166
+      },
+      {
+        "feature": "word__what",
+        "coefficient": -0.7892
+      },
+      {
+        "feature": "word__explain",
+        "coefficient": -0.7288
+      },
+      {
+        "feature": "word__do",
+        "coefficient": -0.6574
+      },
+      {
+        "feature": "word__what are",
+        "coefficient": -0.6443
+      },
+      {
+        "feature": "word__between",
+        "coefficient": -0.6081
+      },
+      {
+        "feature": "word__write",
+        "coefficient": -0.5892
+      },
+      {
+        "feature": "word__does",
+        "coefficient": -0.5761
+      },
+      {
+        "feature": "word__using",
+        "coefficient": -0.5561
+      },
+      {
+        "feature": "word__are the",
+        "coefficient": -0.531
+      },
+      {
+        "feature": "word__what is",
+        "coefficient": -0.5257
+      },
+      {
+        "feature": "word__how does",
+        "coefficient": -0.5008
+      }
+    ]
+  },
+  "status": "candidate_unpromoted",
+  "limitations_and_disclosures": {
+    "unpromoted": "This is an experimental candidate trained for Phase 1 Step 3 evaluation. It has NOT been promoted into production and production inference contracts remain unchanged.",
+    "uninspected_holdout_disclosure": "The independent holdout dataset (prompts_independent_holdout.jsonl) was NOT used in any part of training, cross-validation, feature selection, or threshold tuning. As disclosed in Phase 2 baseline metadata, the holdout was evaluated in previous historical runs, so it constitutes a fixed independent benchmark rather than a blind holdout.",
+    "uncalibrated_scores": "Logistic regression decision values are monotonic heuristic indicator scores derived from the sigmoid link function. They are uncalibrated and must not be interpreted as Bayesian probabilities."
+  }
+}

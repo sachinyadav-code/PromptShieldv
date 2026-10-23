@@ -1,4 +1,4 @@
-"""Mock downstream service for PromptShield Phase 1.
+"""Mock downstream service for PromptShield.
 
 Simulates a safe downstream LLM response. Keeps an internal invocation counter
 to verify that blocked requests never reach the downstream service.
@@ -6,7 +6,8 @@ Does not connect to external networks, APIs, databases, or shell tools.
 """
 
 import threading
-from app.schemas import MockDownstreamResponse
+from app.proxy.provider import DownstreamProvider
+from app.schemas import DownstreamResponse, MockDownstreamResponse
 
 _lock = threading.Lock()
 _call_count = 0
@@ -25,7 +26,7 @@ def reset_mock_call_count() -> None:
         _call_count = 0
 
 
-def forward_to_mock_downstream(prompt: str) -> MockDownstreamResponse:
+def forward_to_mock_downstream(prompt: str) -> DownstreamResponse:
     """Process forwarded prompt through simulated downstream service.
 
     Increments the call counter and returns a clearly labeled synthetic response.
@@ -41,9 +42,17 @@ def forward_to_mock_downstream(prompt: str) -> MockDownstreamResponse:
         f"This is an educational simulation, not a live AI model completion."
     )
 
-    return MockDownstreamResponse(
+    return DownstreamResponse(
         simulated=True,
         provider="mock-downstream-service",
         message=message,
         received_prompt_length=prompt_length,
     )
+
+
+class MockDownstreamProvider(DownstreamProvider):
+    """Simulated downstream LLM service implementing DownstreamProvider."""
+
+    def generate(self, prompt: str) -> DownstreamResponse:
+        """Forward prompt through simulated mock service."""
+        return forward_to_mock_downstream(prompt)

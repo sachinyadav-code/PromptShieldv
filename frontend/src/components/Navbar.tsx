@@ -1,6 +1,6 @@
 import React from 'react';
 
-export type TabType = 'overview' | 'inspect' | 'audit' | 'rules';
+export type TabType = 'overview' | 'inspect' | 'tools' | 'audit' | 'rules';
 
 interface NavbarProps {
   activeTab: TabType;
@@ -45,6 +45,13 @@ export const Navbar: React.FC<NavbarProps> = ({
           onClick={() => onTabChange('inspect')}
         >
           Inspect & Proxy
+        </button>
+        <button
+          type="button"
+          className={`nav-tab ${activeTab === 'tools' ? 'active' : ''}`}
+          onClick={() => onTabChange('tools')}
+        >
+          Tool Guard & DLP
         </button>
         <button
           type="button"

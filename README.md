@@ -135,6 +135,25 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 
 ---
 
+## Running the Frontend Dashboard (React + Vite)
+
+### 1. Install Dependencies & Start Vite Server
+
+```cmd
+:: Navigate to frontend directory
+cd C:\Users\Sachin\OneDrive\Desktop\PromptSheildv\frontend
+
+:: Install npm dependencies (if not already installed)
+npm.cmd install
+
+:: Launch the Vite development server
+npm.cmd run dev
+```
+
+Open `http://localhost:5173` in any modern web browser to access the interactive PromptShield Security Gateway dashboard.
+
+---
+
 ## API Verification Examples
 
 ### Health Check (`GET /health`)
@@ -239,6 +258,54 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/v1/audit/events?limit=20&decis
 ```
 
 ---
+
+---
+
+## Downstream LLM Provider Integration (Phase 2)
+
+PromptShield supports flexible downstream LLM execution via a unified provider interface:
+- **`mock` (Default)**: Safe, in-memory educational simulation. Generates synthetic responses without connecting to external networks. Keeps an internal invocation counter for test validation.
+- **`ollama`**: Connects to a local [Ollama](https://ollama.com) instance HTTP API (`POST /api/generate`) to execute prompts against locally hosted open-source models (e.g. Llama 3.2, Mistral).
+
+### Configuration Options
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `PROMPTSHIELD_DOWNSTREAM_PROVIDER` | `mock` | Downstream execution provider (`mock` or `ollama`). |
+| `PROMPTSHIELD_OLLAMA_BASE_URL` | `http://localhost:11434` | Base HTTP URL of the local Ollama instance. |
+| `PROMPTSHIELD_OLLAMA_MODEL` | `llama3.2:1b` | Model identifier tag pulled into Ollama. |
+| `PROMPTSHIELD_DOWNSTREAM_TIMEOUT_SECONDS` | `30` | Overall request timeout in seconds (bounded 1.0–300.0s). |
+
+### Running with Ollama Locally
+
+1. **Install Ollama**:
+   Download and install from [ollama.com](https://ollama.com).
+2. **Start the Ollama daemon**:
+   ```bash
+   ollama serve
+   ```
+3. **Pull a lightweight model**:
+   ```bash
+   ollama pull llama3.2:1b
+   ```
+4. **Configure PromptShield**:
+   Set in `.env` or your shell:
+   ```bash
+   PROMPTSHIELD_DOWNSTREAM_PROVIDER=ollama
+   PROMPTSHIELD_OLLAMA_MODEL=llama3.2:1b
+   ```
+5. **Start PromptShield Gateway**:
+   ```bash
+   cd backend
+   uvicorn app.main:app --reload
+   ```
+
+### Downstream Security & Defense-in-Depth
+
+- **Egress Untrusted Boundary**: Real LLM completions from Ollama are treated as **untrusted egress data**. Every provider response is actively inspected by Output DLP filters before delivery to clients.
+- **Critical Secret Quarantine**: If a downstream model emits credentials, private keys, or payment card data, the response is blocked (`decision: BLOCK`) and redacted to `null`.
+- **Zero Retries**: Provider calls execute strictly once. Failed requests are never automatically retried to prevent accidental model re-execution or token duplication.
+- **Startup Resilience**: PromptShield starts cleanly without requiring Ollama to be active. Provider connectivity is only engaged when an allowed client prompt is forwarded.
 
 ## Limitations and Security Considerations
 

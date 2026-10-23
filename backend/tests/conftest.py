@@ -10,7 +10,7 @@ from app.auth import ENV_API_KEYS, ENV_AUTH_ENABLED
 from app.limits import reset_limits_state
 from app.main import app, reset_rag_corpus
 from app.policies.engine import reset_ml_enforcement_mode
-from app.proxy.mock_service import reset_mock_call_count
+from app.proxy import reset_downstream_provider, reset_mock_call_count
 
 TEST_API_KEY = "ps-test-suite-key-2026"
 
@@ -27,6 +27,7 @@ def reset_gateway_state(tmp_path):
     os.environ[ENV_API_KEYS] = TEST_API_KEY
 
     reset_audit_store()
+    reset_downstream_provider()
     reset_mock_call_count()
     clear_audit_events()
     reset_ml_enforcement_mode()
@@ -38,6 +39,7 @@ def reset_gateway_state(tmp_path):
     reset_ml_enforcement_mode()
     reset_rag_corpus()
     reset_limits_state()
+    reset_downstream_provider()
     reset_audit_store()
 
 

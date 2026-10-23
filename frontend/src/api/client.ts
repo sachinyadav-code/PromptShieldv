@@ -9,6 +9,9 @@ import type {
   RAGProxyResponse,
   RAGRequest,
   RuleInfo,
+  ToolCallRequest,
+  ToolExecutionResponse,
+  ToolValidationResponse,
 } from '../types/api';
 
 export class ApiError extends Error {
@@ -166,6 +169,22 @@ export class PromptShieldApiClient {
 
   async proxyRAG(payload: RAGRequest): Promise<RAGProxyResponse> {
     return this.request<RAGProxyResponse>('/api/v1/rag/proxy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async validateTool(payload: ToolCallRequest): Promise<ToolValidationResponse> {
+    return this.request<ToolValidationResponse>('/api/v1/tools/validate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async executeTool(payload: ToolCallRequest): Promise<ToolExecutionResponse> {
+    return this.request<ToolExecutionResponse>('/api/v1/tools/execute', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),

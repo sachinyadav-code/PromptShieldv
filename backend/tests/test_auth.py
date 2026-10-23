@@ -242,14 +242,21 @@ class TestHttpSecurityHeadersAndCORS:
 
     def test_cors_explicit_empty_env_disallows_all_cross_origins(self, monkeypatch):
         """Setting PROMPTSHIELD_ALLOWED_ORIGINS to empty string disables cross-origin access."""
+        import importlib
         monkeypatch.setenv(ENV_ALLOWED_ORIGINS, "")
         monkeypatch.setenv(ENV_API_KEYS, TEST_PRIMARY_KEY)
+        import app.main
+        importlib.reload(app.main)
         from app.main import app as test_app
 
         with TestClient(test_app) as client:
             res = client.get("/health", headers={"Origin": "http://localhost:5173"})
             assert res.status_code == 200
             assert "access-control-allow-origin" not in res.headers
+
+        # Restore default app state after test
+        monkeypatch.delenv(ENV_ALLOWED_ORIGINS, raising=False)
+        importlib.reload(app.main)
 
     def test_cors_production_vercel_frontend_origin(self, monkeypatch):
         """Verify production frontend origin https://promptshieldv-frontend.vercel.app

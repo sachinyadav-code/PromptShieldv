@@ -5,6 +5,7 @@ import type { TabType } from './components/Navbar';
 import { ConfigModal } from './components/ConfigModal';
 import { OverviewView } from './components/OverviewView';
 import { InspectView } from './components/InspectView';
+import { ToolsView } from './components/ToolsView';
 import { AuditEventsView } from './components/AuditEventsView';
 import { RulesView } from './components/RulesView';
 import './App.css';
@@ -72,6 +73,13 @@ export const App: React.FC = () => {
 
         {activeTab === 'inspect' && (
           <InspectView
+            apiClient={apiClient}
+            onOpenSettings={() => setIsConfigOpen(true)}
+          />
+        )}
+
+        {activeTab === 'tools' && (
+          <ToolsView
             apiClient={apiClient}
             onOpenSettings={() => setIsConfigOpen(true)}
           />

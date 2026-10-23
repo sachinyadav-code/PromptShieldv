@@ -6,9 +6,11 @@ from app.audit.logger import (
     log_output_security_event,
     log_rag_security_event,
     log_security_event,
+    log_tool_security_event,
 )
 from app.audit.storage import (
     AuditStorageError,
+    PostgresAuditStore,
     SQLiteAuditStore,
     get_audit_db_path,
     get_audit_store,
@@ -17,6 +19,7 @@ from app.audit.storage import (
 
 __all__ = [
     "AuditStorageError",
+    "PostgresAuditStore",
     "SQLiteAuditStore",
     "clear_audit_events",
     "get_audit_db_path",
@@ -25,5 +28,6 @@ __all__ = [
     "log_output_security_event",
     "log_rag_security_event",
     "log_security_event",
+    "log_tool_security_event",
     "reset_audit_store",
 ]

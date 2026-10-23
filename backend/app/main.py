@@ -1,4 +1,6 @@
 from contextlib import asynccontextmanager
+import hashlib
+import json
 import logging
 import threading
 from typing import List, Optional, Sequence, Tuple
@@ -13,6 +15,8 @@ from app.audit import (
     get_audit_store,
     log_rag_security_event,
     log_security_event,
+    log_tool_security_event,
+    reset_audit_store,
 )
 from app.auth import (
     HEADER_CONTENT_TYPE_OPTIONS,
@@ -42,7 +46,12 @@ from app.policies.engine import (
     evaluate_rag_policy,
     validate_startup_configuration,
 )
-from app.proxy.mock_service import forward_to_mock_downstream
+from app.proxy import (
+    MockDownstreamProvider,
+    forward_to_mock_downstream,
+    get_downstream_provider,
+    validate_downstream_provider_config,
+)
 from app.rag import (
     CorpusLoadError,
     Document,
@@ -54,6 +63,7 @@ from app.schemas import (
     AuditEventResponse,
     AuditQueryResponse,
     DocumentInspectionSummary,
+    DownstreamResponse,
     HealthResponse,
     InspectResponse,
     MLAssessment,
@@ -65,6 +75,12 @@ from app.schemas import (
     RAGRequest,
     RetrievedDocumentSummary,
     RuleInfo,
+)
+from app.tools import (
+    ToolCallRequest,
+    ToolExecutionResponse,
+    ToolGuard,
+    ToolValidationResponse,
 )
 
 logger = logging.getLogger("promptshield.gateway")
@@ -80,17 +96,29 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing PromptShield Gateway...")
     mode = validate_startup_configuration()
     validate_limits_configuration()
+    validate_downstream_provider_config()
     try:
         audit_store = get_audit_store()
         audit_store.initialize_schema()
     except Exception as e:
         logger.error("Failed to initialize audit database on startup: %s", type(e).__name__)
+        try:
+            audit_store.close()
+        except Exception:
+            pass
+        reset_audit_store()
         raise RuntimeError("Audit storage initialization failed on startup.") from e
 
     origins = get_allowed_origins()
     logger.info("PromptShield Gateway initialized with ML enforcement mode: %s; CORS allowed origins: %s", mode, origins)
     yield
     logger.info("Shutting down PromptShield Gateway...")
+    try:
+        audit_store.close()
+    except Exception as e:
+        logger.error("Failed to cleanly close audit store on shutdown: %s", type(e).__name__)
+    finally:
+        reset_audit_store()
 
 
 app = FastAPI(
@@ -101,31 +129,15 @@ app = FastAPI(
 )
 
 # 1. Configurable CORS policy middleware
-class DynamicCORSMiddleware:
-    """Dynamically applies CORSMiddleware based on PROMPTSHIELD_ALLOWED_ORIGINS.
-
-    Allows runtime and per-test environment variable configuration of allowed origins.
-    """
-
-    def __init__(self, app):
-        self.app = app
-
-    async def __call__(self, scope, receive, send):
-        origins = get_allowed_origins()
-        if origins and scope["type"] == "http":
-            cors = CORSMiddleware(
-                self.app,
-                allow_origins=origins,
-                allow_credentials=False,
-                allow_methods=["GET", "POST", "OPTIONS"],
-                allow_headers=["Authorization", "X-API-Key", "Content-Type"],
-            )
-            await cors(scope, receive, send)
-        else:
-            await self.app(scope, receive, send)
-
-
-app.add_middleware(DynamicCORSMiddleware)
+# Registered on the FastAPI app so CORSMiddleware is outermost, ensuring
+# preflight requests and error responses receive CORS headers.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=get_allowed_origins(),
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "X-API-Key", "Content-Type"],
+)
 
 
 # 2. HTTP Security response headers middleware
@@ -344,6 +356,17 @@ def inspect_prompt(payload: PromptRequest) -> InspectResponse:
     )
 
 
+def dispatch_downstream_request(prompt: str):
+    """Dispatch prompt to active downstream provider.
+
+    Preserves monkeypatch compatibility for tests that patch forward_to_mock_downstream in app.main.
+    """
+    provider = get_downstream_provider()
+    if isinstance(provider, MockDownstreamProvider):
+        return forward_to_mock_downstream(prompt)
+    return provider.generate(prompt)
+
+
 @app.post(
     "/api/v1/proxy",
     response_model=ProxyResponse,
@@ -395,7 +418,7 @@ def proxy_prompt(payload: PromptRequest) -> ProxyResponse:
 
     if decision.decision == "ALLOW":
         try:
-            downstream_result = forward_to_mock_downstream(payload.prompt)
+            downstream_result = dispatch_downstream_request(payload.prompt)
             forwarded = True
         except Exception as exc:
             logger.error("Downstream service call failed on /api/v1/proxy: %s", type(exc).__name__)
@@ -926,7 +949,7 @@ def proxy_rag(payload: RAGRequest) -> RAGProxyResponse:
     if policy_decision.decision == "ALLOW":
         rag_prompt = assemble_rag_downstream_prompt(payload.query, retrieved_docs)
         try:
-            downstream_result = forward_to_mock_downstream(rag_prompt)
+            downstream_result = dispatch_downstream_request(rag_prompt)
             forwarded = True
         except Exception as exc:
             logger.error("Downstream service call failed on /api/v1/rag/proxy: %s", type(exc).__name__)
@@ -1046,4 +1069,260 @@ def proxy_rag(payload: RAGRequest) -> RAGProxyResponse:
         downstream_response=effective_downstream,
         findings=findings_summaries,
         ml_assessment=ml_assessment,
+    )
+
+
+# ===========================================================================
+# Phase 3: Tool-Call Guard Endpoints
+# ===========================================================================
+
+
+@app.post(
+    "/api/v1/tools/validate",
+    response_model=ToolValidationResponse,
+    dependencies=[
+        Depends(authenticate_request),
+        Depends(enforce_rate_limit),
+    ],
+)
+def validate_tool_endpoint(payload: ToolCallRequest) -> ToolValidationResponse:
+    """Validate a candidate tool-call request without invoking the underlying handler."""
+    server_request_id = str(uuid.uuid4())
+    client_request_id = payload.call_id
+
+    # Compute deterministic argument metadata (never logging raw argument values)
+    arg_keys = sorted(list(payload.arguments.keys())) if isinstance(payload.arguments, dict) else []
+    arg_count = len(payload.arguments) if isinstance(payload.arguments, dict) else 0
+    try:
+        arg_json = json.dumps(payload.arguments, sort_keys=True) if isinstance(payload.arguments, dict) else ""
+        arg_sha256 = hashlib.sha256(arg_json.encode("utf-8")).hexdigest() if arg_json else None
+    except Exception:
+        arg_sha256 = None
+
+    guard = ToolGuard()
+    validation_result = guard.validate(payload)
+
+    log_tool_security_event(
+        request_id=server_request_id,
+        endpoint="/api/v1/tools/validate",
+        event_type="tool_validation",
+        tool_name=payload.tool_name,
+        decision=validation_result.decision,
+        client_request_id=client_request_id,
+        error_code=validation_result.error_code,
+        argument_keys=arg_keys,
+        argument_count=arg_count,
+        argument_sha256=arg_sha256,
+    )
+
+    return ToolValidationResponse(
+        decision=validation_result.decision,
+        tool_name=payload.tool_name,
+        error_code=validation_result.error_code,
+        explanation=validation_result.explanation,
+        request_id=server_request_id,
+        client_request_id=client_request_id,
+        validated_arguments=validation_result.validated_arguments,
+    )
+
+
+@app.post(
+    "/api/v1/tools/execute",
+    response_model=ToolExecutionResponse,
+    dependencies=[
+        Depends(authenticate_request),
+        Depends(enforce_rate_limit),
+        Depends(enforce_concurrency_limit),
+    ],
+)
+def execute_tool_endpoint(payload: ToolCallRequest) -> ToolExecutionResponse:
+    """Validate and execute an authorized, harmless demonstration tool call."""
+    server_request_id = str(uuid.uuid4())
+    client_request_id = payload.call_id
+
+    # Compute deterministic argument metadata (never logging raw argument values)
+    arg_keys = sorted(list(payload.arguments.keys())) if isinstance(payload.arguments, dict) else []
+    arg_count = len(payload.arguments) if isinstance(payload.arguments, dict) else 0
+    try:
+        arg_json = json.dumps(payload.arguments, sort_keys=True) if isinstance(payload.arguments, dict) else ""
+        arg_sha256 = hashlib.sha256(arg_json.encode("utf-8")).hexdigest() if arg_json else None
+    except Exception:
+        arg_sha256 = None
+
+    guard = ToolGuard()
+    # 1. First step: validate call against allowlist and strict Pydantic schema
+    val = guard.validate(payload)
+    if val.decision != "ALLOW":
+        log_tool_security_event(
+            request_id=server_request_id,
+            endpoint="/api/v1/tools/execute",
+            event_type="tool_execution",
+            tool_name=payload.tool_name,
+            decision="BLOCK",
+            client_request_id=client_request_id,
+            error_code=val.error_code,
+            argument_keys=arg_keys,
+            argument_count=arg_count,
+            argument_sha256=arg_sha256,
+        )
+        return ToolExecutionResponse(
+            success=False,
+            tool_name=payload.tool_name,
+            request_id=server_request_id,
+            client_request_id=client_request_id,
+            output=None,
+            error=val.explanation,
+            error_code=val.error_code,
+        )
+
+    # 2. Second step: resolve execution handler from registry
+    handler = guard.registry.get_handler(payload.tool_name)
+    if handler is None:
+        log_tool_security_event(
+            request_id=server_request_id,
+            endpoint="/api/v1/tools/execute",
+            event_type="tool_execution",
+            tool_name=payload.tool_name,
+            decision="BLOCK",
+            client_request_id=client_request_id,
+            error_code="NO_HANDLER",
+            argument_keys=arg_keys,
+            argument_count=arg_count,
+            argument_sha256=arg_sha256,
+        )
+        return ToolExecutionResponse(
+            success=False,
+            tool_name=payload.tool_name,
+            request_id=server_request_id,
+            client_request_id=client_request_id,
+            output=None,
+            error=f"No execution handler configured for tool '{payload.tool_name}'.",
+            error_code="NO_HANDLER",
+        )
+
+    tool_def = guard.registry.get_tool(payload.tool_name)
+    assert tool_def is not None
+
+    # 3. Third step: invoke handler with validated Pydantic model
+    try:
+        validated_model = tool_def.args_schema.model_validate(val.validated_arguments)
+        raw_output = handler(validated_model)
+    except Exception as exc:
+        logger.error("Tool execution failed on '%s': %s", payload.tool_name, type(exc).__name__)
+        log_tool_security_event(
+            request_id=server_request_id,
+            endpoint="/api/v1/tools/execute",
+            event_type="tool_execution",
+            tool_name=payload.tool_name,
+            decision="BLOCK",
+            client_request_id=client_request_id,
+            error_code="TOOL_EXECUTION_ERROR",
+            argument_keys=arg_keys,
+            argument_count=arg_count,
+            argument_sha256=arg_sha256,
+        )
+        return ToolExecutionResponse(
+            success=False,
+            tool_name=payload.tool_name,
+            request_id=server_request_id,
+            client_request_id=client_request_id,
+            output=None,
+            error=f"Tool execution failed: {str(exc)}",
+            error_code="TOOL_EXECUTION_ERROR",
+        )
+
+    # 4. Fourth step: serialize output safely
+    try:
+        serialized_output = json.dumps(raw_output, sort_keys=True)
+    except Exception as exc:
+        logger.error("Tool output serialization failed on '%s': %s", payload.tool_name, type(exc).__name__)
+        log_tool_security_event(
+            request_id=server_request_id,
+            endpoint="/api/v1/tools/execute",
+            event_type="tool_execution",
+            tool_name=payload.tool_name,
+            decision="BLOCK",
+            client_request_id=client_request_id,
+            error_code="SERIALIZATION_FAILED",
+            argument_keys=arg_keys,
+            argument_count=arg_count,
+            argument_sha256=arg_sha256,
+        )
+        return ToolExecutionResponse(
+            success=False,
+            tool_name=payload.tool_name,
+            request_id=server_request_id,
+            client_request_id=client_request_id,
+            output=None,
+            error="Tool output serialization failed.",
+            error_code="SERIALIZATION_FAILED",
+        )
+
+    # 5. Fifth step: Output DLP inspection on serialized output
+    output_enforcement = enforce_output_security(
+        DownstreamResponse(
+            simulated=True,
+            provider="tool_execution",
+            message=serialized_output,
+            received_prompt_length=len(serialized_output),
+        )
+    )
+
+    if output_enforcement.effective_decision == "BLOCK":
+        log_tool_security_event(
+            request_id=server_request_id,
+            endpoint="/api/v1/tools/execute",
+            event_type="tool_execution",
+            tool_name=payload.tool_name,
+            decision="BLOCK",
+            client_request_id=client_request_id,
+            error_code=output_enforcement.error_code or "OUTPUT_BLOCKED_BY_POLICY",
+            argument_keys=arg_keys,
+            argument_count=arg_count,
+            argument_sha256=arg_sha256,
+            output_status=output_enforcement.audit_outcome,
+            output_findings_count=output_enforcement.finding_count,
+            output_matched_rule_ids=output_enforcement.matched_rule_ids,
+            output_error_code=output_enforcement.error_code,
+        )
+        return ToolExecutionResponse(
+            success=False,
+            tool_name=payload.tool_name,
+            request_id=server_request_id,
+            client_request_id=client_request_id,
+            output=None,
+            error=output_enforcement.explanation or "Output blocked by security policy.",
+            error_code=output_enforcement.error_code or "OUTPUT_BLOCKED_BY_POLICY",
+        )
+
+    if output_enforcement.audit_outcome == "redacted" and output_enforcement.downstream_response:
+        final_output = output_enforcement.downstream_response.message
+    else:
+        final_output = raw_output
+
+    log_tool_security_event(
+        request_id=server_request_id,
+        endpoint="/api/v1/tools/execute",
+        event_type="tool_execution",
+        tool_name=payload.tool_name,
+        decision="ALLOW",
+        client_request_id=client_request_id,
+        error_code=None,
+        argument_keys=arg_keys,
+        argument_count=arg_count,
+        argument_sha256=arg_sha256,
+        output_status=output_enforcement.audit_outcome,
+        output_findings_count=output_enforcement.finding_count,
+        output_matched_rule_ids=output_enforcement.matched_rule_ids,
+        output_error_code=None,
+    )
+
+    return ToolExecutionResponse(
+        success=True,
+        tool_name=payload.tool_name,
+        request_id=server_request_id,
+        client_request_id=client_request_id,
+        output=final_output,
+        error=None,
+        error_code=None,
     )

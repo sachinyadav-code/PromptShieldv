@@ -143,6 +143,38 @@ export interface AuditEvent {
   output_findings_count?: number | null;
   output_matched_rule_ids: string[];
   output_error_code?: string | null;
+  tool_name?: string | null;
+  argument_count?: number | null;
+  argument_keys?: string[];
+  argument_sha256?: string | null;
+}
+
+export interface ToolCallRequest {
+  tool_name: string;
+  arguments: Record<string, unknown>;
+  call_id?: string | null;
+}
+
+export interface ToolValidationResponse {
+  decision: 'ALLOW' | 'BLOCK';
+  error_code?: string | null;
+  explanation: string;
+  tool_name: string;
+  category?: string | null;
+  validated_arguments?: Record<string, unknown> | null;
+  requires_confirmation: boolean;
+}
+
+export interface ToolExecutionResponse {
+  success: boolean;
+  decision: 'ALLOW' | 'BLOCK';
+  tool_name: string;
+  call_id?: string | null;
+  output?: unknown | null;
+  error_code?: string | null;
+  error_message?: string | null;
+  output_status?: string | null;
+  output_matched_rule_ids?: string[];
 }
 
 export interface AuditQueryResponse {

@@ -20,7 +20,7 @@ from app.output.rules import (
 )
 from app.output.scanner import scan_output
 from app.output.schemas import OutputScanResult, RedactionResult
-from app.schemas import MockDownstreamResponse
+from app.schemas import DownstreamResponse, MockDownstreamResponse
 
 logger = logging.getLogger("promptshield.output.service")
 
@@ -100,7 +100,7 @@ class OutputEnforcementResult:
     """
 
     effective_decision: Literal["ALLOW", "BLOCK"]
-    downstream_response: Optional[MockDownstreamResponse]
+    downstream_response: Optional[DownstreamResponse]
     audit_outcome: Literal["clean", "redacted", "blocked", "scan_error"]
     matched_rule_ids: List[str]
     finding_count: int
@@ -113,7 +113,7 @@ class OutputEnforcementResult:
 
 
 def enforce_output_security(
-    downstream_response: MockDownstreamResponse,
+    downstream_response: DownstreamResponse,
 ) -> OutputEnforcementResult:
     """Inspect and sanitize downstream response content before client return.
 
@@ -301,7 +301,7 @@ def enforce_output_security(
 
     # Reconstruct MockDownstreamResponse with sanitized text while preserving types.
     # Note: `provider` is preserved from trusted static gateway metadata.
-    sanitized_response = MockDownstreamResponse(
+    sanitized_response = DownstreamResponse(
         simulated=downstream_response.simulated,
         provider=downstream_response.provider,
         message=redaction_res.redacted_text,

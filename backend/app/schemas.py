@@ -229,8 +229,8 @@ class InspectResponse(BaseModel):
         return self.ml_assessment
 
 
-class MockDownstreamResponse(BaseModel):
-    """Harmless simulated downstream LLM service response.
+class DownstreamResponse(BaseModel):
+    """Structured response from a downstream LLM provider (or simulated provider).
 
     TRUST BOUNDARY AND METADATA ARCHITECTURE NOTICE:
     - `message`: Untrusted client-visible egress text that carries simulated
@@ -238,18 +238,19 @@ class MockDownstreamResponse(BaseModel):
       and is actively inspected by DLP rules (`enforce_output_security`) and
       redacted or blocked prior to client return.
     - `provider`: Trusted internal static gateway metadata (defaults to
-      'mock-downstream-service'). It is generated server-side by the gateway mock
-      infrastructure rather than by untrusted downstream actors or caller-controlled
-      request headers. If `provider` or additional response metadata is ever expanded
-      to accept dynamic external routing parameters, caller headers, or arbitrary
-      upstream metadata, those attributes must also be brought into the security
-      inspection and validation boundary.
+      'mock-downstream-service' or 'ollama'). It is generated server-side by the gateway
+      provider infrastructure rather than by untrusted downstream actors or caller-controlled
+      request headers.
     """
 
     simulated: bool = Field(default=True, description="Flag indicating simulated response.")
     provider: str = Field(default="mock-downstream-service")
     message: str
     received_prompt_length: int
+
+
+# Backwards compatibility alias
+MockDownstreamResponse = DownstreamResponse
 
 
 class ProxyResponse(BaseModel):
@@ -266,7 +267,7 @@ class ProxyResponse(BaseModel):
     )
     matched_rules: List[str]
     explanation: str
-    downstream_response: Optional[MockDownstreamResponse] = Field(
+    downstream_response: Optional[DownstreamResponse] = Field(
         default=None,
         description="Downstream response if allowed; omitted/null if blocked.",
     )
@@ -532,7 +533,7 @@ class RAGProxyResponse(BaseModel):
         default_factory=list,
         description="Security assessment summaries for each retrieved document.",
     )
-    downstream_response: Optional[MockDownstreamResponse] = Field(
+    downstream_response: Optional[DownstreamResponse] = Field(
         default=None,
         description="Downstream response if allowed and forwarded; null if blocked or held for review.",
     )
@@ -588,6 +589,10 @@ class AuditEventResponse(BaseModel):
     ingress_transformation_error_code: Optional[str] = Field(default=None, description="Error code if transformation failed.")
     ml_available: Optional[bool] = Field(default=None, description="Whether ML classifier was available.")
     ml_risk_score: Optional[float] = Field(default=None, ge=0.0, le=1.0, description="Highest evaluated ML risk score.")
+    tool_name: Optional[str] = Field(default=None, description="Name of the evaluated or executed tool.")
+    argument_count: Optional[int] = Field(default=None, description="Number of top-level arguments supplied to the tool.")
+    argument_keys: List[str] = Field(default_factory=list, description="Top-level argument keys supplied to the tool.")
+    argument_sha256: Optional[str] = Field(default=None, description="SHA-256 fingerprint of the tool arguments payload.")
 
 
 class AuditQueryResponse(BaseModel):

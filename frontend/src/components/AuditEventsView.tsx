@@ -188,6 +188,8 @@ export const AuditEventsView: React.FC<AuditEventsViewProps> = ({
               <option value="/api/v1/proxy">/api/v1/proxy</option>
               <option value="/api/v1/rag/inspect">/api/v1/rag/inspect</option>
               <option value="/api/v1/rag/proxy">/api/v1/rag/proxy</option>
+              <option value="/api/v1/tools/validate">/api/v1/tools/validate</option>
+              <option value="/api/v1/tools/execute">/api/v1/tools/execute</option>
             </select>
           </div>
 
@@ -471,6 +473,36 @@ export const AuditEventsView: React.FC<AuditEventsViewProps> = ({
                   <div className="detail-item">
                     <span className="detail-label">Query SHA256:</span>
                     <span className="mono-cell text-muted">{selectedEvent.query_sha256}</span>
+                  </div>
+                )}
+                {selectedEvent.tool_name && (
+                  <div className="detail-item">
+                    <span className="detail-label">Tool Name:</span>
+                    <code>{selectedEvent.tool_name}</code>
+                  </div>
+                )}
+                {selectedEvent.argument_count !== null && selectedEvent.argument_count !== undefined && (
+                  <div className="detail-item">
+                    <span className="detail-label">Argument Count:</span>
+                    <span>{selectedEvent.argument_count}</span>
+                  </div>
+                )}
+                {selectedEvent.argument_keys && selectedEvent.argument_keys.length > 0 && (
+                  <div className="detail-item full-width">
+                    <span className="detail-label">Argument Keys:</span>
+                    <div className="rule-pill-list">
+                      {selectedEvent.argument_keys.map((k) => (
+                        <span key={k} className="rule-tag">
+                          {k}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {selectedEvent.argument_sha256 && (
+                  <div className="detail-item full-width">
+                    <span className="detail-label">Argument Hash (SHA-256):</span>
+                    <span className="mono-cell text-muted">{selectedEvent.argument_sha256}</span>
                   </div>
                 )}
                 {selectedEvent.retrieved_doc_ids && selectedEvent.retrieved_doc_ids.length > 0 && (
